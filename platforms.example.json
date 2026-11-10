@@ -1,0 +1,52 @@
+{
+  "Platforms": [
+    {
+      "PlatformId": "UnixSSH-PROD",
+      "PlatformName": "Unix via SSH - Production",
+      "Description": "Production Linux servers, daily verification",
+      "State": "Active",
+      "ApplyChangesIfPlatformExists": false,
+      "Settings": [
+        {
+          "Operation": "replace",
+          "Path": "Policy/General/interval",
+          "Value": "1440"
+        },
+        {
+          "Operation": "remove",
+          "Path": "Policy/additionalPolicySettings/debug"
+        }
+      ],
+      "PSM": {
+        "PSMServerID": "PSMServer_PROD",
+        "Connectors": [
+          {
+            "PSMConnectorID": "PSM-SSH",
+            "Enabled": true
+          },
+          {
+            "PSMConnectorID": "PSM-WinSCP",
+            "Enabled": false
+          }
+        ]
+      }
+    },
+    {
+      "PlatformId": "UnixSSH-TEST",
+      "PlatformName": "Unix via SSH - Test",
+      "Description": "Test Linux servers",
+      "State": "Inactive",
+      "ApplyChangesIfPlatformExists": false
+    },
+    {
+      "PlatformId": "UnixSSH-DMZ",
+      "PlatformName": "Unix via SSH - DMZ",
+      "Description": "",
+      "State": "Unchanged",
+      "ApplyChangesIfPlatformExists": true,
+      "PSM": {
+        "PSMServerID": "PSMServer_DMZ"
+      }
+    }
+  ]
+}
