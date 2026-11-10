@@ -301,6 +301,7 @@ Test-Case 'import: a real run creates the variants and shows each result' {
     Assert-Equal 2 (Get-VaultPlatform 'SampleUnix-PROD').Operations.Count
     Assert-Equal 'PSMServer_PROD' (Get-VaultPlatform 'SampleUnix-PROD').PSM.PSMServerID
     Assert-True ($ui.ProgressText.Text -like 'Finished in*3 completed, 0 skipped, 0 failed*') $ui.ProgressText.Text
+    Assert-True ($ui.ProgressText.Text -like "*Source platform 'SampleUnix' was added to the Vault.") 'the summary line must say the source platform was added'
     Assert-Equal 3 $ui.RunProgress.Value
     Assert-True ((Get-LogText) -like "*Platform 'SampleUnix-TEST' created.*")
     Assert-True ((Get-LogText) -notlike '*not-a-real-password*') 'password leaked into the log'
