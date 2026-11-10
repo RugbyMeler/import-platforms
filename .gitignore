@@ -1,0 +1,5 @@
+# Run output: CSV reports and logs (they name your platforms and your PVWA user)
+reports/
+
+# Your own variant lists; platforms.example.json is the tracked sample
+/platforms.json
