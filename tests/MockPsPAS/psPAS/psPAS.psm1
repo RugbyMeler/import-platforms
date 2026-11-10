@@ -34,6 +34,8 @@ function Reset-MockVault {
     $state.SideBySideConsumesPackage = $true
     $state.FailSettingsFor = @()
     $state.DelayMilliseconds = 0
+    $state.RejectPackage = $false       # PVWA refuses the ZIP outright
+    $state.ImportAsId = ''              # PVWA reads a different platform ID out of the ZIP
 }
 
 function Add-MockCall {
@@ -136,6 +138,8 @@ function Get-PASPlatform {
     $state = Get-MockState
     if ($state.DelayMilliseconds -gt 0) { Start-Sleep -Milliseconds $state.DelayMilliseconds }
     foreach ($platform in @($state.Platforms)) {
+        # A platform that exists in the Vault but is not a target platform this user can list.
+        if ($platform.ContainsKey('Hidden') -and $platform.Hidden) { continue }
         # Like the real search, this matches the base ID and the name too.
         if ($Search -and "$($platform.PlatformID) $($platform.Name) $($platform.PlatformBaseID)" -notlike "*$Search*") { continue }
         [PSCustomObject]@{
@@ -170,7 +174,9 @@ function Import-PASPlatform {
 
     if ($PSCmdlet.ParameterSetName -eq 'Import') {
         $package = Read-MockPackageId -Path $ImportFile
+        if ($state.ImportAsId) { $package.Id = $state.ImportAsId }
         Add-MockCall "Import-PASPlatform -ImportFile $($package.Id)"
+        if ($state.RejectPackage) { throw 'Mock psPAS: [400] The platform package is not valid.' }
         if ($null -ne (Find-MockPlatform -PlatformId $package.Id)) {
             $state.Stored = $package
             if ($state.ConflictThrows) { throw "Mock psPAS: [409] Platform '$($package.Id)' already exists." }

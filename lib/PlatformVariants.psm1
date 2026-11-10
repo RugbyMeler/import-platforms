@@ -1280,6 +1280,7 @@ function Invoke-PlatformVariantImport {
     $sourceId = $SourcePlatformId
     $sessionCreated = $false
     $packageUploaded = $false
+    $sourceImported = $false
     $cancelled = $false
     $fatalError = $null
     $writtenReport = $null
@@ -1384,12 +1385,47 @@ function Invoke-PlatformVariantImport {
             Write-EngineLog "Source platform '$sourceId' already exists."
         }
         elseif ($dryRun) {
-            Write-EngineLog "Source platform '$sourceId' does not exist; it would be imported from '$zipPath'." -Level WARNING
+            Write-EngineLog "Source platform '$sourceId' is not in this Vault. A real run imports it from the ZIP first and leaves it in the Vault." -Level WARNING
         }
         else {
-            Write-EngineLog "Source platform '$sourceId' does not exist. Importing '$zipPath'."
-            $null = Import-PASPlatform -ImportFile $zipPath -Confirm:$false -WhatIf:$false -ErrorAction Stop
-            $existing[$sourceId] = Wait-TargetPlatform -PlatformId $sourceId -TimeoutSeconds $PlatformTimeoutSeconds
+            # A side-by-side import needs the source platform to exist in this Vault: PVWA only
+            # holds a package that collided with an existing platform. A ZIP that comes from
+            # another Vault is therefore imported as-is first, and stays.
+            Write-EngineLog "Source platform '$sourceId' is not in this Vault. Importing it from '$zipPath' first; it stays in the Vault afterwards." -Level WARNING
+            $imported = $null
+            try {
+                $imported = Import-PASPlatform -ImportFile $zipPath -Confirm:$false -WhatIf:$false -ErrorAction Stop
+            }
+            catch {
+                $reason = $_.Exception.Message
+                $heldId = Get-StoredPlatformId
+                if ($null -ne $heldId -and $heldId -ieq $sourceId) {
+                    # PVWA kept the package, which it only does when the platform already exists.
+                    $packageUploaded = $true
+                    throw "PVWA reports that platform '$sourceId' already exists, but it is not among the target platforms this user can see (it may be a group or dependent platform). No variants were created. PVWA said: $reason"
+                }
+                throw "Source platform '$sourceId' is not in this Vault and importing it from the ZIP failed, so no variants were created. PVWA said: $reason"
+            }
+
+            # PVWA's answer is the authority on which platform the ZIP holds.
+            $reportedId = ([string](Get-ObjectProperty -InputObject $imported -Name 'PlatformID')).Trim()
+            if ($reportedId -and $reportedId -ine $sourceId) {
+                Write-EngineLog "PVWA imported the ZIP as '$reportedId', not '$sourceId' as read from the ZIP. Using '$reportedId' as the source platform." -Level WARNING
+                $sourceId = $reportedId
+                $sourceImported = $true
+                if (@($variants | Where-Object { $_.PlatformId -ieq $sourceId }).Count -gt 0) {
+                    throw "A variant uses the platform ID '$sourceId', which is the ID PVWA gave the source platform. No variants were created."
+                }
+            }
+
+            try {
+                $existing[$sourceId] = Wait-TargetPlatform -PlatformId $sourceId -TimeoutSeconds $PlatformTimeoutSeconds
+            }
+            catch {
+                $sourceImported = $true
+                throw "PVWA accepted the ZIP, but source platform '$sourceId' did not appear among the target platforms, so no variants were created. $($_.Exception.Message)"
+            }
+            $sourceImported = $true
             Write-EngineLog "Source platform '$sourceId' imported." -Level SUCCESS
         }
 
@@ -1533,6 +1569,8 @@ function Invoke-PlatformVariantImport {
         NotRun          = (& $count 'NotRun') + (& $count 'Cancelled')
         Cancelled       = $cancelled
         Error           = $fatalError
+        SourceId        = $sourceId
+        SourceImported  = $sourceImported      # this run had to add the source platform to the Vault
         ReportPath      = $writtenReport
         LogPath         = $script:LogFile
         DurationSeconds = [System.Math]::Round(((Get-Date) - $runStarted).TotalSeconds, 1)
@@ -1541,6 +1579,9 @@ function Invoke-PlatformVariantImport {
 
     $level = if ($summary.Failed -gt 0 -or $fatalError) { 'ERROR' } elseif ($summary.NotRun -gt 0) { 'WARNING' } else { 'SUCCESS' }
     $doneWord = if ($dryRun) { 'would be processed' } else { 'completed' }
+    if ($sourceImported) {
+        Write-EngineLog "Source platform '$sourceId' was not in this Vault and was added by this run." -Level WARNING
+    }
     Write-EngineLog ("Finished: {0} {1}, {2} skipped, {3} failed, {4} not run." -f $summary.Completed, $doneWord, $summary.Skipped, $summary.Failed, $summary.NotRun) -Level $level
     Send-EngineEvent -Type 'Done' -Message 'Finished.' -Data $summary
 

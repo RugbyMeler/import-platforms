@@ -483,6 +483,100 @@ Test-Case 'OTP is only accepted with RADIUS' {
     Assert-Equal 'Append' (Get-Vault).LastLogon.OTPMode
 }
 
+Write-Host "`nSource platform not in the Vault" -ForegroundColor Cyan
+
+Test-Case 'the ZIP is imported first, the variants are made from it, and the run says so' {
+    Reset-Vault
+    $events = New-Object System.Collections.Generic.List[object]
+    $collect = { param($e) $events.Add($e) }.GetNewClosure()
+    $arguments = $common.Clone(); $arguments['OnEvent'] = $collect
+    $summary = Invoke-PlatformVariantImport @arguments -ConfigurationFile (New-TestConfiguration $standardJson)
+
+    Assert-True ($null -eq $summary.Error) "Unexpected error: $($summary.Error)"
+    Assert-Equal $true $summary.SourceImported
+    Assert-Equal 'SampleUnix' $summary.SourceId
+    Assert-Equal 3 $summary.Completed
+
+    $source = Get-VaultPlatform 'SampleUnix'
+    Assert-True ($null -ne $source) 'the source platform must now exist'
+    Assert-Equal 0 $source.Operations.Count 'the source platform itself is left exactly as imported'
+    Assert-True ($null -eq $source.PSM)
+    foreach ($id in @('SampleUnix-PROD', 'SampleUnix-TEST', 'SampleUnix-DEV')) {
+        Assert-Equal 'SampleUnix' (Get-VaultPlatform $id).PlatformBaseID
+    }
+
+    # Order matters: plain import of the source, then a colliding upload, then side by side.
+    $calls = @((Get-Vault).Calls | Where-Object { $_ -like 'Import-PASPlatform*' })
+    Assert-Equal 'Import-PASPlatform -ImportFile SampleUnix' $calls[0]
+    Assert-Equal 'Import-PASPlatform -ImportFile SampleUnix' $calls[1]
+    Assert-Equal 'Import-PASPlatform -PlatformId SampleUnix-PROD' $calls[2]
+
+    $log = ($events | Where-Object { $_.Type -eq 'Log' } | ForEach-Object { $_.Message }) -join "`n"
+    Assert-True ($log -like "*'SampleUnix' is not in this Vault*") 'the log must say the source was missing'
+    Assert-True ($log -like "*was added by this run*") 'the log must say the source was added'
+}
+
+Test-Case 'a second run finds the source and does not import it again' {
+    $summary = Invoke-PlatformVariantImport @common -ConfigurationFile (New-TestConfiguration '{ "Platforms": [ { "PlatformId": "SampleUnix-EXTRA", "PlatformName": "Extra" } ] }')
+    Assert-Equal $false $summary.SourceImported
+    Assert-Equal 1 $summary.Completed
+    Assert-Equal 1 @((Get-Vault).Platforms | Where-Object { $_.PlatformID -eq 'SampleUnix' }).Count 'still exactly one source platform'
+}
+
+Test-Case 'dry run says the source would be imported, and imports nothing' {
+    Reset-Vault
+    $events = New-Object System.Collections.Generic.List[object]
+    $arguments = $common.Clone(); $arguments['OnEvent'] = { param($e) $events.Add($e) }.GetNewClosure()
+    $summary = Invoke-PlatformVariantImport @arguments -ConfigurationFile (New-TestConfiguration $standardJson) -WhatIf
+    Assert-Equal $false $summary.SourceImported
+    Assert-Equal 3 $summary.Completed
+    Assert-Equal 0 (Get-Vault).Platforms.Count
+    $log = ($events | Where-Object { $_.Type -eq 'Log' } | ForEach-Object { $_.Message }) -join "`n"
+    Assert-True ($log -like '*A real run imports it from the ZIP first*') $log
+}
+
+Test-Case 'PVWA refuses the ZIP: the run stops before any variant, with the reason' {
+    Reset-Vault
+    (Get-Vault).RejectPackage = $true
+    $summary = Invoke-PlatformVariantImport @common -ConfigurationFile (New-TestConfiguration $standardJson)
+    Assert-True ($summary.Error -like "*'SampleUnix' is not in this Vault and importing it from the ZIP failed*no variants were created*not valid*") $summary.Error
+    Assert-Equal $false $summary.SourceImported
+    Assert-Equal 0 (Get-Vault).Platforms.Count
+    Assert-Equal 0 $summary.Report.Count
+    Assert-Equal 0 @((Get-Vault).Calls | Where-Object { $_ -like 'Import-PASPlatform -PlatformId*' }).Count 'no side-by-side import may be attempted'
+    Assert-Equal $false (Get-Vault).Connected
+}
+
+Test-Case 'the source exists but is not a visible target platform: clear message, nothing left behind' {
+    Reset-Vault
+    & (Get-Module psPAS) { $hidden = Add-MockPlatform -PlatformId 'SampleUnix' -Name 'Hidden one' -BaseId 'SampleUnix'; $hidden.Hidden = $true }
+    $summary = Invoke-PlatformVariantImport @common -ConfigurationFile (New-TestConfiguration $standardJson)
+    Assert-True ($summary.Error -like "*already exists, but it is not among the target platforms*") $summary.Error
+    Assert-Equal 1 (Get-Vault).Platforms.Count 'nothing may be created'
+    Assert-True ($null -eq (Get-Vault).Stored) 'the package PVWA held must be cleaned up'
+    Assert-Equal $false (Get-Vault).Connected
+}
+
+Test-Case 'PVWA reads a different platform ID out of the ZIP: that ID becomes the source' {
+    Reset-Vault
+    (Get-Vault).ImportAsId = 'SampleUnixV2'
+    $summary = Invoke-PlatformVariantImport @common -ConfigurationFile (New-TestConfiguration $standardJson)
+    Assert-True ($null -eq $summary.Error) "Unexpected error: $($summary.Error)"
+    Assert-Equal 'SampleUnixV2' $summary.SourceId
+    Assert-Equal 3 $summary.Completed
+    Assert-Equal 'SampleUnixV2' (Get-VaultPlatform 'SampleUnix-PROD').PlatformBaseID
+    Assert-Equal 'SampleUnixV2' $summary.Report[0].SourcePlatformId
+}
+
+Test-Case 'a variant that would collide with the ID PVWA gave the source is refused' {
+    Reset-Vault
+    (Get-Vault).ImportAsId = 'SampleUnix-PROD'
+    $summary = Invoke-PlatformVariantImport @common -ConfigurationFile (New-TestConfiguration $standardJson)
+    Assert-True ($summary.Error -like "*A variant uses the platform ID 'SampleUnix-PROD'*") $summary.Error
+    Assert-Equal 1 (Get-Vault).Platforms.Count 'only the source was imported'
+    Assert-Equal $true $summary.SourceImported 'the summary must admit that the source was added'
+}
+
 Write-Host "`nCommand line script" -ForegroundColor Cyan
 
 $cli = Join-Path $repoRoot 'Import-PlatformVariants.ps1'

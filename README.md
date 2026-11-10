@@ -147,6 +147,20 @@ So for each new variant the tool:
 
 The package left in PVWA's memory is removed at the end of the run.
 
+### When the source platform is not in the Vault
+
+This is fine — for example when the ZIP was exported from another Vault. The run imports the ZIP
+as it is first and then creates the variants from it. Things to know:
+
+- **The source platform stays in the Vault afterwards**, unchanged and in whatever state PVWA
+  gives a newly imported platform. PVWA has no way to create a variant without it. The log and
+  the summary line say when a run added it.
+- A dry run tells you the source is missing, but it cannot tell you whether PVWA will accept the
+  ZIP, because it uploads nothing.
+- If PVWA refuses the ZIP, the run stops there with PVWA's message and creates no variants.
+- If PVWA reports the platform under a different ID than the one read from the ZIP, the ID PVWA
+  reports is used as the source for the rest of the run.
+
 ## Tests
 
 ```powershell

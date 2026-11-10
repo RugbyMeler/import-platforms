@@ -502,6 +502,7 @@ function Receive-EngineEvent {
             $summary = $Item.Data
             $word = if ($summary.DryRun) { 'would be processed' } else { 'completed' }
             $text = "Finished in $($summary.DurationSeconds) s: $($summary.Completed) $word, $($summary.Skipped) skipped, $($summary.Failed) failed, $($summary.NotRun) not run."
+            if ($summary.SourceImported) { $text += " Source platform '$($summary.SourceId)' was added to the Vault." }
             if ($summary.Error -and $summary.Total -eq 0) { $text = "Stopped: $($summary.Error)" }
             $ui.ProgressText.Text = $text
             Set-Status $text
