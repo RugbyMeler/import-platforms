@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
     .SYNOPSIS
-    Graphical front end for the CyberArk platform variant importer.
+    Platformer 2.0 - graphical front end for the CyberArk platform variant importer.
 
     .DESCRIPTION
     Import tab          - connect to PVWA, pick the platform ZIP and the variant configuration,
@@ -52,6 +52,7 @@ foreach ($match in [regex]::Matches($xamlText, 'x:Name="(\w+)"')) {
     $ui[$name] = $window.FindName($name)
 }
 $window.Resources['SettingPaths'] = [string[]]@(Get-PlatformSettingPathSuggestion)
+$script:AppName = [string]$window.Title    # the one place the tool's name comes from (MainWindow.xaml)
 
 $script:Headless = [bool]$NoShow        # tests: no modal dialogs
 $script:Messages = New-Object System.Collections.Generic.List[string]
@@ -111,7 +112,7 @@ function Show-Message {
     # Every dialog goes through here so the tests can run without anything blocking.
     param(
         [string]$Text,
-        [string]$Title = 'Platform Variant Importer',
+        [string]$Title = $script:AppName,
         [string]$Buttons = 'OK',
         [string]$Icon = 'Information'
     )
@@ -121,6 +122,43 @@ function Show-Message {
         return $script:DialogAnswer
     }
     return [string][System.Windows.MessageBox]::Show($window, $Text, $Title, $Buttons, $Icon)
+}
+
+function Find-BannerLogo {
+    # The logo is not part of this repository: it is a local file, assets\logo.<png|jpg|bmp|gif>.
+    param([string]$Folder = (Join-Path -Path $PSScriptRoot -ChildPath 'assets'))
+
+    foreach ($extension in @('png', 'jpg', 'jpeg', 'bmp', 'gif')) {
+        $candidate = Join-Path -Path $Folder -ChildPath "logo.$extension"
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+    return $null
+}
+
+function Set-BannerLogo {
+    # Shows the logo in the banner, or hides the slot when there is no usable image.
+    # Returns $true when a logo is shown. A broken file must never stop the tool from starting.
+    param([string]$Path)
+
+    $ui.BannerLogo.Source = $null
+    $ui.BannerLogo.Visibility = 'Collapsed'
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    try {
+        $image = New-Object System.Windows.Media.Imaging.BitmapImage
+        $image.BeginInit()
+        $image.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad    # read now, do not keep the file locked
+        $image.UriSource = New-Object System.Uri((Resolve-Path -LiteralPath $Path).ProviderPath)
+        $image.EndInit()
+        $image.Freeze()
+        $ui.BannerLogo.Source = $image
+        $ui.BannerLogo.Visibility = 'Visible'
+        return $true
+    }
+    catch {
+        $ui.BannerLogo.Source = $null
+        $ui.BannerLogo.Visibility = 'Collapsed'
+        return $false
+    }
 }
 
 function Set-Status {
@@ -1444,6 +1482,7 @@ $script:Settings = Get-PlatformImportSettings
 Set-UiFromSettings -Settings $script:Settings
 $ui.RunButton.Content = if ($ui.DryRunBox.IsChecked) { 'Run dry run' } else { 'Run import' }
 $ui.SettingsPathText.Text = "Settings: $(Get-PlatformImportSettingsPath)"
+$null = Set-BannerLogo -Path (Find-BannerLogo)
 Update-PackageInfo
 Update-SourcePanels
 if ((Get-VariantSource) -eq 'File') { Show-Plan -Force } else { Reset-Plan }

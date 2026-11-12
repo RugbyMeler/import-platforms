@@ -3,3 +3,6 @@ reports/
 
 # Your own variant lists; platforms.example.json is the tracked sample
 /platforms.json
+
+# Banner logo: a company trademark, added locally, never published (see assets/README.md)
+/assets/logo.*

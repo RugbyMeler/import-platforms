@@ -1,4 +1,6 @@
-# import-platforms
+# Platformer 2.0
+
+*Made by PAS Squad.*
 
 Create many variants of one CyberArk platform — `UnixSSH-PROD`, `UnixSSH-TEST`, `UnixSSH-DMZ` … —
 from a single platform ZIP and a list of differences, with a GUI or from the command line.
@@ -30,6 +32,10 @@ Double-click `Start-PlatformImportGui.cmd`, or run:
 ```powershell
 .\Start-PlatformImportGui.ps1
 ```
+
+The banner at the top shows the tool name, the credit and, when you supply one, a logo:
+put the image at `assets\logo.png` (see [assets/README.md](assets/README.md)). The logo file is
+git-ignored and never published with this repository; without it the banner shows text only.
 
 **Import tab** — work through the four cards on the left:
 
@@ -216,6 +222,7 @@ memory. It is only ever loaded by the test script.
 | `Start-PlatformImportGui.cmd` / `.ps1` | The GUI |
 | `Import-PlatformVariants.ps1` | The command line |
 | `lib\PlatformVariants.psm1` | The engine both of them use |
-| `lib\MainWindow.xaml` | Window layout |
+| `lib\MainWindow.xaml` | Window layout, tool name and credit |
+| `assets\` | Your local banner logo (`logo.png`, git-ignored) |
 | `platforms.example.json` | Sample configuration |
 | `tests\` | Automated tests and the psPAS stand-in |
