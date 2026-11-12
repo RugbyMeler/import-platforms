@@ -92,6 +92,61 @@ Test-Case 'window builds and every named control is found' {
     Assert-True ($ui.ReportFolderBox.Text -like '*reports') 'report folder should default to .\reports'
 }
 
+function New-TestLogo {
+    # A grey placeholder image, so the tests never need (or ship) a real company logo.
+    param([string]$Path)
+    $visual = New-Object System.Windows.Media.DrawingVisual
+    $context = $visual.RenderOpen()
+    $context.DrawRectangle([System.Windows.Media.Brushes]::Gainsboro, $null, (New-Object System.Windows.Rect(0, 0, 120, 40)))
+    $text = New-Object System.Windows.Media.FormattedText('LOGO', [cultureinfo]::InvariantCulture, [System.Windows.FlowDirection]::LeftToRight,
+        (New-Object System.Windows.Media.Typeface('Segoe UI')), 22, [System.Windows.Media.Brushes]::DimGray)
+    $context.DrawText($text, (New-Object System.Windows.Point(30, 5)))
+    $context.Close()
+    $bitmap = New-Object System.Windows.Media.Imaging.RenderTargetBitmap(120, 40, 96, 96, [System.Windows.Media.PixelFormats]::Pbgra32)
+    $bitmap.Render($visual)
+    $encoder = New-Object System.Windows.Media.Imaging.PngBitmapEncoder
+    $encoder.Frames.Add([System.Windows.Media.Imaging.BitmapFrame]::Create($bitmap))
+    $stream = [System.IO.File]::Create($Path)
+    try { $encoder.Save($stream) } finally { $stream.Dispose() }
+}
+
+Test-Case 'banner: shows the tool name and the credit' {
+    Assert-Equal 'Platformer 2.0' $window.Title
+    Assert-Equal 'Platformer' $ui.BannerNameText.Text
+    Assert-Equal '2.0' $ui.BannerVersionText.Text
+    Assert-Equal 'Made by PAS Squad' $ui.BannerCreditText.Text
+    Assert-Equal 'Platformer 2.0' $script:AppName 'dialogs are titled with the same name'
+    Assert-True $ui.BannerNameText.IsVisible
+    Assert-True $ui.BannerCreditText.IsVisible
+}
+
+Test-Case 'banner: the logo comes from a local file, and the tool starts fine without one' {
+    $logoFolder = Join-Path $workFolder 'assets'
+    New-Item -Path $logoFolder -ItemType Directory -Force | Out-Null
+    Assert-True ($null -eq (Find-BannerLogo -Folder $logoFolder)) 'an empty folder has no logo'
+    Assert-Equal $false (Set-BannerLogo -Path '')
+    Assert-Equal 'Collapsed' ([string]$ui.BannerLogo.Visibility)
+
+    Set-Content -LiteralPath (Join-Path $logoFolder 'logo.jpg') -Value 'this is not an image'
+    Assert-Equal (Join-Path $logoFolder 'logo.jpg') (Find-BannerLogo -Folder $logoFolder)
+    Assert-Equal $false (Set-BannerLogo -Path (Join-Path $logoFolder 'logo.jpg')) 'a broken image is ignored, not an error'
+    Assert-Equal 'Collapsed' ([string]$ui.BannerLogo.Visibility)
+
+    New-TestLogo -Path (Join-Path $logoFolder 'logo.png')
+    Assert-Equal (Join-Path $logoFolder 'logo.png') (Find-BannerLogo -Folder $logoFolder) 'PNG is preferred'
+    Assert-Equal $true (Set-BannerLogo -Path (Find-BannerLogo -Folder $logoFolder))
+    Assert-Equal 'Visible' ([string]$ui.BannerLogo.Visibility)
+    Invoke-UiPump 200
+    Assert-Equal 30 ([int]$ui.BannerLogo.ActualHeight) 'the logo is scaled to the banner'
+    Assert-Equal 90 ([int]$ui.BannerLogo.ActualWidth) 'and keeps its proportions'
+
+    # The file is read once and not held open, so it can be replaced while the tool runs.
+    Remove-Item -LiteralPath (Join-Path $logoFolder 'logo.png')
+    Assert-Equal 'Visible' ([string]$ui.BannerLogo.Visibility)
+    New-TestLogo -Path (Join-Path $logoFolder 'logo.png')      # stays on for the screenshots
+    $null = Set-BannerLogo -Path (Join-Path $logoFolder 'logo.png')
+}
+
 Test-Case 'naming: a fresh window is set to the human vault and waits for a name' {
     Assert-Equal 'Human' (Get-VariantSource)
     Assert-Equal $true $ui.SourceHumanRadio.IsChecked
