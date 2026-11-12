@@ -577,6 +577,83 @@ Test-Case 'a variant that would collide with the ID PVWA gave the source is refu
     Assert-Equal $true $summary.SourceImported 'the summary must admit that the source was added'
 }
 
+Write-Host "`nStandard platform names (Human / Machine vault)" -ForegroundColor Cyan
+
+Test-Case 'human vault: the four standard names, in order' {
+    $ids = @(New-PlatformVariantSet -VaultType Human -CustomName 'MyApp' | ForEach-Object { $_.PlatformId })
+    Assert-Equal 'MyApp-PROD, MyApp-PrePROD, MyApp-PROD-MAN, MyApp-PrePROD-MAN' ($ids -join ', ')
+}
+
+Test-Case 'machine vault: the six standard names, in order' {
+    $ids = @(New-PlatformVariantSet -VaultType Machine -CustomName 'MyApp' | ForEach-Object { $_.PlatformId })
+    Assert-Equal 'MyApp-PROD-D, MyApp-PrePROD-D, MyApp-PROD-RT-RL, MyApp-PROD-RT-RS, MyApp-PrePROD-RT-RL, MyApp-PrePROD-RT-RS' ($ids -join ', ')
+}
+
+Test-Case 'generated platforms use the same text as ID and name, and change nothing else' {
+    $set = @(New-PlatformVariantSet -VaultType Human -CustomName '  MyApp  ')
+    Assert-Equal 'MyApp-PROD' $set[0].PlatformId 'the custom name is trimmed'
+    Assert-Equal 'MyApp-PROD' $set[0].PlatformName
+    Assert-Equal 'Unchanged' $set[0].State
+    Assert-Equal $false $set[0].ApplyChangesIfPlatformExists
+    Assert-Equal 0 @($set[0].Settings).Count
+    Assert-True ($null -eq $set[0].PSM)
+    Assert-Equal 0 @(Test-PlatformVariantConfiguration -Platforms $set -SourcePlatformId 'SampleUnix').Count
+}
+
+Test-Case 'standard platforms can be left out by full ID or by suffix, and extra ones added' {
+    $ids = @(New-PlatformVariantSet -VaultType Machine -CustomName 'MyApp' -ExcludePlatformId 'MyApp-PROD-D', '-prepROD-rt-rs' -AdditionalPlatformId 'MyApp-DR', ' Other ', 'MyApp-PROD-RT-RL' | ForEach-Object { $_.PlatformId })
+    Assert-Equal 'MyApp-PrePROD-D, MyApp-PROD-RT-RL, MyApp-PROD-RT-RS, MyApp-PrePROD-RT-RL, MyApp-DR, Other' ($ids -join ', ') 'an extra that is already on the list is not added twice'
+}
+
+Test-Case 'a mistyped exclusion is an error, not a silently created platform' {
+    Assert-Throws { New-PlatformVariantSet -VaultType Human -CustomName 'MyApp' -ExcludePlatformId 'MyApp-PROD-MANN' } "*Cannot exclude 'MyApp-PROD-MANN'*"
+}
+
+Test-Case 'an empty custom name or an unknown vault type is refused' {
+    Assert-Throws { New-PlatformVariantSet -VaultType Human -CustomName '   ' } '*custom name is required*'
+    Assert-Throws { New-PlatformVariantSet -VaultType Robot -CustomName 'MyApp' } "*Unknown vault type 'Robot'*"
+}
+
+Test-Case 'a custom name that cannot be a platform ID is caught by validation' {
+    $issues = @(Test-PlatformVariantConfiguration -Platforms @(New-PlatformVariantSet -VaultType Human -CustomName 'My App') -SourcePlatformId 'SampleUnix')
+    Assert-Equal 4 @($issues | Where-Object { $_.Message -like '*must not contain spaces*' }).Count
+}
+
+Test-Case 'the engine creates a generated set without any configuration file' {
+    Reset-Vault
+    $summary = Invoke-PlatformVariantImport @common -Platforms (New-PlatformVariantSet -VaultType Machine -CustomName 'MyApp')
+    Assert-True ($null -eq $summary.Error) "Unexpected error: $($summary.Error)"
+    Assert-Equal 6 $summary.Completed
+    $created = @((Get-Vault).Platforms | Where-Object { $_.PlatformID -ne 'SampleUnix' } | ForEach-Object { $_.PlatformID })
+    Assert-Equal 'MyApp-PROD-D, MyApp-PrePROD-D, MyApp-PROD-RT-RL, MyApp-PROD-RT-RS, MyApp-PrePROD-RT-RL, MyApp-PrePROD-RT-RS' ($created -join ', ')
+    Assert-Equal 'MyApp-PROD-D' (Get-VaultPlatform 'MyApp-PROD-D').Name
+    Assert-Equal 'SampleUnix' (Get-VaultPlatform 'MyApp-PROD-D').PlatformBaseID
+    Assert-Equal 0 @((Get-Vault).Calls | Where-Object { $_ -like 'Set-PAS*' -or $_ -like 'Enable-*' -or $_ -like 'Disable-*' }).Count 'names only: no settings, PSM or state change'
+}
+
+Test-Case 'running the same generated set again skips what exists' {
+    $summary = Invoke-PlatformVariantImport @common -Platforms (New-PlatformVariantSet -VaultType Machine -CustomName 'MyApp')
+    Assert-Equal 6 $summary.Skipped
+    Assert-Equal 7 (Get-Vault).Platforms.Count
+}
+
+Test-Case 'the engine needs exactly one of a list and a configuration file' {
+    Reset-Vault
+    $summary = Invoke-PlatformVariantImport @common
+    Assert-True ($summary.Error -like '*Nothing to create*') $summary.Error
+    $summary = Invoke-PlatformVariantImport @common -Platforms (New-PlatformVariantSet -VaultType Human -CustomName 'MyApp') -ConfigurationFile (New-TestConfiguration $standardJson)
+    Assert-True ($summary.Error -like '*not both*') $summary.Error
+    Assert-Equal 0 (Get-Vault).Sessions
+}
+
+Test-Case 'entries that are already normalised pass through unchanged' {
+    $config = Read-PlatformVariantConfiguration -Path (New-TestConfiguration $standardJson)
+    $again = @($config.Platforms | ForEach-Object { ConvertTo-PlatformVariant -Entry $_ })
+    Assert-Equal (ConvertTo-PlatformVariantJson -Platforms $config.Platforms) (ConvertTo-PlatformVariantJson -Platforms $again)
+    Assert-Equal 'kept on round trip' $again[0].Extra['Comment']
+    Assert-True (-not $again[0].Extra.Contains('Extra')) 'the Extra dictionary must not be nested into itself'
+}
+
 Write-Host "`nCommand line script" -ForegroundColor Cyan
 
 $cli = Join-Path $repoRoot 'Import-PlatformVariants.ps1'
@@ -622,6 +699,34 @@ Test-Case 'command line throws when a platform fails' {
     Reset-Vault
     (Get-Vault).FailSettingsFor = @('SampleUnix-PROD')
     Assert-Throws { & $cli -Credential $credential 6>$null } '*SampleUnix-PROD*'
+}
+
+Test-Case 'command line -VaultType creates the standard platforms without a configuration file' {
+    Reset-Vault
+    $result = & $cli -Credential $credential -SourcePlatformZip $zip -VaultType Machine -CustomName 'MyApp' -ExcludePlatformId '-PrePROD-RT-RS' -AdditionalPlatformId 'MyApp-DR' -PassThru 6>$null
+    Assert-Equal 6 $result.Completed
+    $created = @((Get-Vault).Platforms | Where-Object { $_.PlatformID -ne 'SampleUnix' } | ForEach-Object { $_.PlatformID })
+    Assert-Equal 'MyApp-PROD-D, MyApp-PrePROD-D, MyApp-PROD-RT-RL, MyApp-PROD-RT-RS, MyApp-PrePROD-RT-RL, MyApp-DR' ($created -join ', ')
+}
+
+Test-Case 'command line -VaultType without -CustomName names the platforms after the ZIP' {
+    $result = & $cli -SourcePlatformZip $zip -VaultType Human -ValidateOnly 6>$null
+    Assert-Equal $true $result.IsValid
+    Assert-Equal 'SampleUnix-PROD, SampleUnix-PrePROD, SampleUnix-PROD-MAN, SampleUnix-PrePROD-MAN' ($result.PlatformIds -join ', ')
+}
+
+Test-Case 'command line refuses mixed or incomplete naming options' {
+    Assert-Throws { & $cli -Credential $credential -SourcePlatformZip $zip -VaultType Human -ConfigurationFile (New-TestConfiguration $standardJson) 6>$null } '*not both*'
+    Assert-Throws { & $cli -Credential $credential -SourcePlatformZip $zip -CustomName 'MyApp' 6>$null } '*only work together with -VaultType*'
+}
+
+Test-Case 'command line never picks a naming scheme from saved settings' {
+    # The GUI may have left "Human" selected; an unattended script run must not act on that.
+    Reset-Vault
+    Save-PlatformImportSettings -Settings @{ VariantSource = 'Human'; CustomName = 'FromTheGui' }
+    $result = & $cli -Credential $credential -PassThru 6>$null
+    Assert-Equal 0 @((Get-Vault).Platforms | Where-Object { $_.PlatformID -like 'FromTheGui*' }).Count
+    Assert-Equal 3 $result.Completed 'it still runs the saved configuration file'
 }
 
 if ($IncludeGui -or $ScreenshotFolder) {

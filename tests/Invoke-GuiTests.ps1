@@ -70,6 +70,18 @@ function Get-ResultStatuses {
     return @($script:ResultsTable.Rows | ForEach-Object { [string]$_['Status'] })
 }
 
+function Get-ListedIds {
+    return (@($script:ResultsTable.Rows | ForEach-Object { [string]$_['PlatformId'] }) -join ', ')
+}
+
+function Select-ListedPlatform {
+    param([string[]]$Id)
+    $ui.ResultsGrid.SelectedItems.Clear()
+    foreach ($view in @($ui.ResultsGrid.Items)) {
+        if ($Id -contains [string]$view['PlatformId']) { [void]$ui.ResultsGrid.SelectedItems.Add($view) }
+    }
+}
+
 $guiConfig = Join-Path $workFolder 'gui-platforms.json'
 $guiReports = Join-Path $workFolder 'gui-reports'
 
@@ -78,6 +90,23 @@ Test-Case 'window builds and every named control is found' {
     Assert-Equal 0 $missing.Count "Not found: $($missing -join ', ')"
     Assert-Equal 'CyberArk' ([string]$ui.AuthTypeBox.SelectedItem)
     Assert-True ($ui.ReportFolderBox.Text -like '*reports') 'report folder should default to .\reports'
+}
+
+Test-Case 'naming: a fresh window is set to the human vault and waits for a name' {
+    Assert-Equal 'Human' (Get-VariantSource)
+    Assert-Equal $true $ui.SourceHumanRadio.IsChecked
+    Assert-Equal 'Visible' ([string]$ui.SchemePanel.Visibility)
+    Assert-Equal 'Collapsed' ([string]$ui.FilePanel.Visibility)
+    Assert-Equal 'Visible' ([string]$ui.PlanToolbar.Visibility)
+    Assert-Equal '<name>-PROD, <name>-PrePROD, <name>-PROD-MAN, <name>-PrePROD-MAN' (Get-ListedIds) 'without a name the list shows where it goes'
+    Assert-True ($ui.ConfigSummaryText.Text -like 'Enter the custom name*') $ui.ConfigSummaryText.Text
+
+    # Removing works on the placeholder rows too.
+    Select-ListedPlatform '<name>-PROD-MAN'
+    Invoke-Click $ui.PlanRemoveButton
+    Assert-Equal '<name>-PROD, <name>-PrePROD, <name>-PrePROD-MAN' (Get-ListedIds)
+    Invoke-Click $ui.PlanResetButton
+    Assert-Equal 4 $script:ResultsTable.Rows.Count
 }
 Save-Screenshot '1-import-empty'
 
@@ -227,14 +256,158 @@ Test-Case 'editor: a setting path can be picked or typed in the grid cell itself
     Assert-True (Save-EditorFile -Path $guiConfig)
 }
 
-Test-Case 'import: picking the ZIP fills in the source platform ID' {
+Test-Case 'naming: picking the ZIP names the four human-vault platforms after it' {
     $ui.MainTabs.SelectedItem = $ui.ImportTab
     $ui.ZipPathBox.Text = "`"$zip`""        # pasted with quotes, as Explorer copies it
     Update-PackageInfo
-    Update-ConfigSummary
     Assert-Equal 'SampleUnix' $ui.SourceIdBox.Text
     Assert-True ($ui.PackageInfoText.Text -like "*'SampleUnix'*")
-    Assert-True ($ui.ConfigSummaryText.Text -like '3 variant(s), valid*') $ui.ConfigSummaryText.Text
+    Assert-Equal 'SampleUnix' $ui.CustomNameBox.Text 'the custom name starts as the platform ID'
+    Assert-Equal 'SampleUnix-PROD, SampleUnix-PrePROD, SampleUnix-PROD-MAN, SampleUnix-PrePROD-MAN' (Get-ListedIds)
+    Assert-Equal 'Planned,Planned,Planned,Planned' ((Get-ResultStatuses) -join ',')
+    Assert-Equal '4 platform(s), valid.' $ui.ConfigSummaryText.Text
+    Assert-Equal '4 platform(s) planned.' $ui.ProgressText.Text
+}
+
+Test-Case 'naming: a ZIP with a different platform renames the list; the same ZIP keeps a typed name' {
+    $other = New-TestPackage -PlatformId 'OtherApp' -PlatformName 'Other App'
+    $ui.CustomNameBox.Text = 'Typed'
+    $ui.ZipPathBox.Text = $zip
+    Update-PackageInfo
+    Assert-Equal 'Typed' $ui.CustomNameBox.Text 'picking the same platform again must not overwrite a typed name'
+
+    $ui.ZipPathBox.Text = $other
+    Update-PackageInfo
+    Assert-Equal 'OtherApp' $ui.CustomNameBox.Text 'a different platform must not keep the previous name'
+    Assert-Equal 'OtherApp' $ui.SourceIdBox.Text
+    Assert-Equal 'OtherApp-PROD, OtherApp-PrePROD, OtherApp-PROD-MAN, OtherApp-PrePROD-MAN' (Get-ListedIds)
+
+    $ui.ZipPathBox.Text = $zip
+    Update-PackageInfo
+    Assert-Equal 'SampleUnix' $ui.CustomNameBox.Text
+    Assert-Equal 'SampleUnix' $ui.SourceIdBox.Text
+}
+
+Test-Case 'naming: typing a custom name renames every platform as you type' {
+    $ui.CustomNameBox.Text = 'MyApp'
+    Assert-Equal 'MyApp-PROD, MyApp-PrePROD, MyApp-PROD-MAN, MyApp-PrePROD-MAN' (Get-ListedIds)
+    Assert-Equal 'MyApp-PROD' ([string]$script:ResultsTable.Rows[0]['PlatformName']) 'the platform name is the same text as the ID'
+}
+
+Test-Case 'naming: the Machine switch lists the six machine-vault platforms' {
+    $ui.SourceMachineRadio.IsChecked = $true
+    Assert-Equal 'Machine' (Get-VariantSource)
+    Assert-Equal 'MyApp-PROD-D, MyApp-PrePROD-D, MyApp-PROD-RT-RL, MyApp-PROD-RT-RS, MyApp-PrePROD-RT-RL, MyApp-PrePROD-RT-RS' (Get-ListedIds)
+    Assert-Equal '6 platform(s), valid.' $ui.ConfigSummaryText.Text
+    Assert-Equal 'Machine' (Get-PlatformImportSettings).VariantSource 'the switch is remembered'
+}
+
+Test-Case 'naming: platforms can be added, as a full ID or as a suffix of the custom name' {
+    $ui.PlanAddBox.Text = '-DR'
+    Invoke-Click $ui.PlanAddButton
+    $ui.PlanAddBox.Text = 'Shared-Platform'
+    Invoke-Click $ui.PlanAddButton
+    Assert-Equal '' $ui.PlanAddBox.Text 'the box is cleared for the next one'
+    Assert-True ((Get-ListedIds) -like '*MyApp-PrePROD-RT-RS, MyApp-DR, Shared-Platform') (Get-ListedIds)
+    Assert-Equal 8 $script:ResultsTable.Rows.Count
+    $ui.PlanAddBox.Text = 'myapp-dr'
+    Invoke-Click $ui.PlanAddButton
+    Assert-Equal 8 $script:ResultsTable.Rows.Count 'the same ID cannot be added twice'
+    Assert-True ($ui.StatusText.Text -like '*already on the list*') $ui.StatusText.Text
+    $ui.PlanAddBox.Text = ''
+}
+
+Test-Case 'naming: automatically added platforms can be removed, and stay removed when the name changes' {
+    Select-ListedPlatform 'MyApp-PrePROD-D', 'MyApp-PROD-RT-RS'
+    Invoke-Click $ui.PlanRemoveButton
+    Assert-Equal 'MyApp-PROD-D, MyApp-PROD-RT-RL, MyApp-PrePROD-RT-RL, MyApp-PrePROD-RT-RS, MyApp-DR, Shared-Platform' (Get-ListedIds)
+    $ui.CustomNameBox.Text = 'App2'
+    Assert-Equal 'App2-PROD-D, App2-PROD-RT-RL, App2-PrePROD-RT-RL, App2-PrePROD-RT-RS, App2-DR, Shared-Platform' (Get-ListedIds) 'suffix entries follow the name; a full ID does not'
+    $ui.ResultsGrid.SelectedItems.Clear()
+    Invoke-Click $ui.PlanRemoveButton
+    Assert-Equal 6 $script:ResultsTable.Rows.Count 'nothing selected removes nothing'
+}
+Save-Screenshot '5-naming-machine'
+
+Test-Case 'naming: Reset list and switching vault type bring back the standard set' {
+    Invoke-Click $ui.PlanResetButton
+    Assert-Equal 'App2-PROD-D, App2-PrePROD-D, App2-PROD-RT-RL, App2-PROD-RT-RS, App2-PrePROD-RT-RL, App2-PrePROD-RT-RS' (Get-ListedIds)
+    $ui.SourceHumanRadio.IsChecked = $true
+    Assert-Equal 'App2-PROD, App2-PrePROD, App2-PROD-MAN, App2-PrePROD-MAN' (Get-ListedIds)
+}
+
+Test-Case 'naming: a name that cannot be a platform ID is flagged and blocks the run' {
+    $ui.PvwaUrlBox.Text = 'https://pvwa.example.test/PasswordVault'
+    $ui.UsernameBox.Text = 'svc_platforms'
+    $ui.PasswordBox.Password = 'not-a-real-password'
+    $ui.ReportFolderBox.Text = $guiReports
+    Reset-Vault
+    $ui.CustomNameBox.Text = 'My App'
+    Assert-True ($ui.ConfigSummaryText.Text -like '4 platform(s), 4 error(s)*must not contain spaces*') $ui.ConfigSummaryText.Text
+    $script:Messages.Clear()
+    Invoke-Click $ui.RunButton
+    Assert-True ($null -eq $script:Job)
+    Assert-True ($script:Messages[-1] -like '*4 error(s)*correct the custom name*') ($script:Messages -join ' | ')
+
+    $ui.CustomNameBox.Text = ''
+    Assert-True ($ui.ConfigSummaryText.Text -like 'Enter the custom name*')
+    Invoke-Click $ui.RunButton
+    Assert-True ($null -eq $script:Job)
+    Assert-True ($script:Messages[-1] -like 'Enter the custom name first*') $script:Messages[-1]
+    Assert-Equal 0 (Get-Vault).Sessions
+}
+
+Test-Case 'naming: a run creates exactly the listed platforms, with no file involved' {
+    Reset-Vault
+    $ui.CustomNameBox.Text = 'MyApp'
+    Select-ListedPlatform 'MyApp-PrePROD-MAN'
+    Invoke-Click $ui.PlanRemoveButton
+    $ui.PlanAddBox.Text = '-DR'
+    Invoke-Click $ui.PlanAddButton
+    Assert-Equal 'MyApp-PROD, MyApp-PrePROD, MyApp-PROD-MAN, MyApp-DR' (Get-ListedIds)
+
+    $script:DialogAnswer = 'Yes'
+    $script:Messages.Clear()
+    Invoke-Click $ui.RunButton
+    Assert-True ($script:Messages[-1] -like "*4 platform(s) from 'SampleUnix'*MyApp-PROD*MyApp-PrePROD*MyApp-PROD-MAN*MyApp-DR*") $script:Messages[-1]
+    Assert-True ($script:Messages[-1] -notlike '*MyApp-PrePROD-MAN*') 'a removed platform must not be in the confirmation'
+    Assert-True (-not $ui.PlanToolbar.IsEnabled) 'the list is locked while running'
+    Wait-EngineJob
+    Assert-Equal 'Completed,Completed,Completed,Completed' ((Get-ResultStatuses) -join ',')
+    $created = @((Get-Vault).Platforms | Where-Object { $_.PlatformID -ne 'SampleUnix' } | ForEach-Object { $_.PlatformID })
+    Assert-Equal 'MyApp-PROD, MyApp-PrePROD, MyApp-PROD-MAN, MyApp-DR' ($created -join ', ')
+    Assert-True ($null -eq (Get-VaultPlatform 'MyApp-PrePROD-MAN')) 'the removed platform must not be created'
+    Assert-True $ui.PlanToolbar.IsEnabled
+
+    Show-Plan       # what a field losing focus does: the results must stay on screen
+    Assert-Equal 'Completed,Completed,Completed,Completed' ((Get-ResultStatuses) -join ',')
+}
+Save-Screenshot '6-naming-done'
+
+Test-Case 'naming: the generated list can be taken to the editor to add settings' {
+    Assert-Equal 'Customise in editor' ([string]$ui.EditConfigButton.Content)
+    Invoke-Click $ui.EditConfigButton
+    Assert-Equal $ui.EditorTab $ui.MainTabs.SelectedItem
+    Assert-Equal 4 $script:Editor.Platforms.Count
+    Assert-Equal 'MyApp-DR' $script:Editor.Platforms[3].PlatformId
+    Assert-Equal '' $script:Editor.Path 'it is a new, unsaved document'
+    Assert-True $script:Editor.Dirty
+    Assert-True (Open-EditorFile -Path $guiConfig)
+    $ui.PasswordBox.Password = ''
+    Reset-Vault
+}
+
+Test-Case 'import: choosing a JSON file lists the platforms in that file instead' {
+    $ui.MainTabs.SelectedItem = $ui.ImportTab
+    $ui.SourceFileRadio.IsChecked = $true
+    Assert-Equal 'File' (Get-VariantSource)
+    Assert-Equal 'Visible' ([string]$ui.FilePanel.Visibility)
+    Assert-Equal 'Collapsed' ([string]$ui.SchemePanel.Visibility)
+    Assert-Equal 'Collapsed' ([string]$ui.PlanToolbar.Visibility) 'a file is edited in the editor, not in the list'
+    Assert-Equal 'Open in editor' ([string]$ui.EditConfigButton.Content)
+    Assert-Equal 'SampleUnix-PROD, SampleUnix-DEV, SampleUnix-TEST' (Get-ListedIds)
+    Assert-Equal 'Planned,Planned,Planned' ((Get-ResultStatuses) -join ',')
+    Assert-True ($ui.ConfigSummaryText.Text -like '3 platform(s), valid*') $ui.ConfigSummaryText.Text
 }
 
 Test-Case 'import: running without a password asks for it and starts nothing' {
@@ -293,7 +466,7 @@ Test-Case 'import: a real run creates the variants and shows each result' {
     Reset-Vault
     $script:Messages.Clear()
     Invoke-Click $ui.RunButton
-    Assert-True ($script:Messages[-1] -like "*3 platform variant(s) of 'SampleUnix'*https://pvwa.example.test*svc_platforms*") $script:Messages[-1]
+    Assert-True ($script:Messages[-1] -like "*3 platform(s) from 'SampleUnix'*https://pvwa.example.test*svc_platforms*SampleUnix-PROD*SampleUnix-TEST*") $script:Messages[-1]
     Assert-True (-not $ui.ImportInputs.IsEnabled) 'inputs are locked while running'
     Wait-EngineJob
     Assert-Equal 'Completed,Completed,Completed' ((Get-ResultStatuses) -join ',')
@@ -356,6 +529,8 @@ Test-Case 'settings: what was entered is saved, the password is not' {
     Assert-Equal 'svc_platforms' $saved.Username
     Assert-Equal $zip $saved.SourcePlatformZip
     Assert-Equal $guiConfig $saved.ConfigurationFile
+    Assert-Equal 'File' $saved.VariantSource
+    Assert-Equal 'MyApp' $saved.CustomName
     Assert-Equal $guiReports $saved.ReportFolder
     Assert-Equal $guiConfig $saved.EditorFile
     Assert-True ((Get-Content -LiteralPath $env:IMPORTPLATFORMS_SETTINGS -Raw) -notlike '*not-a-real-password*')
@@ -390,6 +565,23 @@ Test-Case 'settings: a new window starts with the saved values' {
     Assert-Equal $guiReports $ui.ReportFolderBox.Text
     Assert-Equal '' $ui.PasswordBox.Password
     Assert-Equal 3 $script:Editor.Platforms.Count 'the last edited file is reopened'
-    Assert-True ($ui.ConfigSummaryText.Text -like '3 variant(s), valid*')
+    Assert-Equal 'File' (Get-VariantSource) 'the JSON file choice is restored'
+    Assert-Equal 'MyApp' $ui.CustomNameBox.Text
+    Assert-True ($ui.ConfigSummaryText.Text -like '3 platform(s), valid*')
+    Assert-Equal 3 $script:ResultsTable.Rows.Count
+
+    # Back to a vault type: the standard platforms come straight back, named as before.
+    $ui.SourceMachineRadio.IsChecked = $true
+    Assert-Equal 6 $script:ResultsTable.Rows.Count
+    Assert-Equal 'MyApp-PROD-D' ([string]$script:ResultsTable.Rows[0]['PlatformId'])
+    $window.Close()
+}
+
+Test-Case 'settings: the vault type is restored and its platforms are ready without any action' {
+    . (Join-Path $repoRoot 'Start-PlatformImportGui.ps1') -NoShow
+    Assert-Equal 'Machine' (Get-VariantSource)
+    Assert-Equal 'Visible' ([string]$ui.PlanToolbar.Visibility)
+    Assert-Equal 'MyApp-PROD-D, MyApp-PrePROD-D, MyApp-PROD-RT-RL, MyApp-PROD-RT-RS, MyApp-PrePROD-RT-RL, MyApp-PrePROD-RT-RS' (Get-ListedIds)
+    Assert-Equal '6 platform(s), valid.' $ui.ConfigSummaryText.Text
     $window.Close()
 }

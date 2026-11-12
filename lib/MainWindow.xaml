@@ -57,6 +57,10 @@
       <Setter Property="VerticalContentAlignment" Value="Center"/>
       <Setter Property="Margin" Value="0,3"/>
     </Style>
+    <Style TargetType="RadioButton">
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
 
     <Style TargetType="Button">
       <Setter Property="Padding" Value="12,0"/>
@@ -267,26 +271,49 @@
 
               <Border Style="{StaticResource Card}">
                 <StackPanel>
-                  <TextBlock Text="3  Variants to create" Style="{StaticResource SectionTitle}"/>
+                  <TextBlock Text="3  Platforms to create" Style="{StaticResource SectionTitle}"/>
                   <Grid>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="110"/>
+                      <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Vault type" Style="{StaticResource FieldLabel}"/>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                      <RadioButton x:Name="SourceHumanRadio" GroupName="VariantSource" Content="Human" Margin="0,0,18,0"
+                                   ToolTip="Standard platforms for a human vault: -PROD, -PrePROD, -PROD-MAN, -PrePROD-MAN."/>
+                      <RadioButton x:Name="SourceMachineRadio" GroupName="VariantSource" Content="Machine" Margin="0,0,18,0"
+                                   ToolTip="Standard platforms for a machine vault: -PROD-D, -PrePROD-D, -PROD-RT-RL, -PROD-RT-RS, -PrePROD-RT-RL, -PrePROD-RT-RS."/>
+                      <RadioButton x:Name="SourceFileRadio" GroupName="VariantSource" Content="From a JSON file"
+                                   ToolTip="Use a configuration file instead, for example one with setting changes or PSM configuration per platform."/>
+                    </StackPanel>
+                  </Grid>
+
+                  <Grid x:Name="SchemePanel" Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="110"/>
+                      <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Custom name" Style="{StaticResource FieldLabel}"/>
+                    <TextBox x:Name="CustomNameBox" Grid.Column="1"
+                             ToolTip="The first part of every platform name, for example MyApp gives MyApp-PROD. Filled in from the ZIP; type your own to change it."/>
+                  </Grid>
+
+                  <Grid x:Name="FilePanel" Margin="0,8,0,0" Visibility="Collapsed">
                     <Grid.ColumnDefinitions>
                       <ColumnDefinition Width="110"/>
                       <ColumnDefinition Width="*"/>
                       <ColumnDefinition Width="6"/>
                       <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <Grid.RowDefinitions>
-                      <RowDefinition Height="Auto"/>
-                      <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
                     <TextBlock Text="Configuration" Style="{StaticResource FieldLabel}"/>
                     <TextBox x:Name="ConfigPathBox" Grid.Column="1"/>
                     <Button x:Name="BrowseConfigButton" Grid.Column="3" Content="Browse..."/>
-                    <DockPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="3" Margin="0,6,0,0">
-                      <Button x:Name="EditConfigButton" DockPanel.Dock="Right" Content="Open in editor" Style="{StaticResource SmallButton}" Margin="8,0,0,0"/>
-                      <TextBlock x:Name="ConfigSummaryText" Style="{StaticResource Hint}" Text="Pick a JSON file, or build one on the Platform editor tab."/>
-                    </DockPanel>
                   </Grid>
+
+                  <DockPanel Margin="110,6,0,0">
+                    <Button x:Name="EditConfigButton" DockPanel.Dock="Right" VerticalAlignment="Top" Content="Open in editor" Style="{StaticResource SmallButton}" Margin="8,0,0,0"/>
+                    <TextBlock x:Name="ConfigSummaryText" Style="{StaticResource Hint}"/>
+                  </DockPanel>
                 </StackPanel>
               </Border>
 
@@ -319,6 +346,7 @@
           <Grid Grid.Column="2">
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
               <RowDefinition Height="3*" MinHeight="120"/>
               <RowDefinition Height="8"/>
               <RowDefinition Height="2*" MinHeight="120"/>
@@ -327,21 +355,35 @@
             <Border Style="{StaticResource Card}">
               <DockPanel>
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                  <Button x:Name="ValidateButton" Content="Validate" Margin="0,0,8,0" ToolTip="Check the ZIP and the configuration without logging on."/>
+                  <Button x:Name="ValidateButton" Content="Validate" Margin="0,0,8,0" ToolTip="Check the ZIP and the list of platforms without logging on."/>
                   <Button x:Name="CancelButton" Content="Cancel" Margin="0,0,8,0" IsEnabled="False" ToolTip="Stops before the next platform. The one in progress is finished first."/>
                   <Button x:Name="RunButton" Content="Run import" Style="{StaticResource PrimaryButton}" MinWidth="120" MinHeight="32"/>
                 </StackPanel>
                 <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
-                  <TextBlock x:Name="ProgressText" Text="Not started." Margin="0,0,0,5"/>
+                  <TextBlock x:Name="ProgressText" Text="Not started." Margin="0,0,0,5" TextTrimming="CharacterEllipsis"
+                             ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
                   <ProgressBar x:Name="RunProgress" Height="6" Minimum="0" Maximum="1" Value="0" Foreground="{StaticResource Accent}" Background="#E5E7EB" BorderThickness="0"/>
                 </StackPanel>
               </DockPanel>
             </Border>
 
-            <DataGrid x:Name="ResultsGrid" Grid.Row="1" IsReadOnly="True" CanUserAddRows="False" CanUserDeleteRows="False">
+            <DockPanel x:Name="PlanToolbar" Grid.Row="1" Margin="0,0,0,6">
+              <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button x:Name="PlanAddButton" Content="Add" Style="{StaticResource SmallButton}" Margin="6,0,0,0"/>
+                <Button x:Name="PlanRemoveButton" Content="Remove selected" Style="{StaticResource SmallButton}" Margin="14,0,0,0"
+                        ToolTip="Take the selected platforms off the list, so they are not created. The Delete key does the same."/>
+                <Button x:Name="PlanResetButton" Content="Reset list" Style="{StaticResource SmallButton}" Margin="6,0,0,0"
+                        ToolTip="Back to the standard platforms for the selected vault type."/>
+              </StackPanel>
+              <TextBlock DockPanel.Dock="Left" Text="Add a platform" Style="{StaticResource FieldLabel}"/>
+              <TextBox x:Name="PlanAddBox" MinHeight="24" Padding="6,2"
+                       ToolTip="Type a platform ID and press Enter. Start with a dash to add to the custom name: -DR gives MyApp-DR."/>
+            </DockPanel>
+
+            <DataGrid x:Name="ResultsGrid" Grid.Row="2" IsReadOnly="True" CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Extended">
               <DataGrid.Columns>
-                <DataGridTextColumn Header="Platform ID" Binding="{Binding PlatformId}" Width="170" ElementStyle="{StaticResource CellText}"/>
-                <DataGridTextColumn Header="Name" Binding="{Binding PlatformName}" Width="160" ElementStyle="{StaticResource CellText}"/>
+                <DataGridTextColumn Header="Platform ID" Binding="{Binding PlatformId}" Width="190" ElementStyle="{StaticResource CellText}"/>
+                <DataGridTextColumn Header="Name" Binding="{Binding PlatformName}" Width="190" ElementStyle="{StaticResource CellText}"/>
                 <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="90" ElementStyle="{StaticResource StatusText}"/>
                 <DataGridTextColumn Header="Result" Binding="{Binding Message}" Width="*" ElementStyle="{StaticResource CellText}">
                   <DataGridTextColumn.CellStyle>
@@ -354,9 +396,9 @@
               </DataGrid.Columns>
             </DataGrid>
 
-            <GridSplitter Grid.Row="2" Height="8" HorizontalAlignment="Stretch" Background="Transparent" ResizeDirection="Rows"/>
+            <GridSplitter Grid.Row="3" Height="8" HorizontalAlignment="Stretch" Background="Transparent" ResizeDirection="Rows"/>
 
-            <Border Grid.Row="3" Background="#111827" CornerRadius="6" Padding="2">
+            <Border Grid.Row="4" Background="#111827" CornerRadius="6" Padding="2">
               <DockPanel>
                 <DockPanel DockPanel.Dock="Top" Margin="10,6,8,2">
                   <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">

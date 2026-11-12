@@ -16,6 +16,14 @@ Set-StrictMode -Version Latest
 $script:AuthTypes = @('CyberArk', 'LDAP', 'RADIUS', 'Windows')
 $script:PlatformStates = @('Unchanged', 'Active', 'Inactive')
 $script:SettingOperations = @('replace', 'remove')
+
+# Naming convention: the suffixes that turn one custom name into the standard set of platforms
+# for a vault type ("MyApp" + "-PROD" = "MyApp-PROD"). Change the convention here; the GUI switch,
+# the command line and the tests all read this table.
+$script:NamingSchemes = [ordered]@{
+    Human   = @('-PROD', '-PrePROD', '-PROD-MAN', '-PrePROD-MAN')
+    Machine = @('-PROD-D', '-PrePROD-D', '-PROD-RT-RL', '-PROD-RT-RS', '-PrePROD-RT-RL', '-PrePROD-RT-RS')
+}
 $script:EventSink = $null
 $script:LogFile = $null
 
@@ -198,6 +206,8 @@ function Get-PlatformImportSettingDefaults {
         SourcePlatformZip    = ''
         SourcePlatformId     = ''
         ConfigurationFile    = ''
+        VariantSource        = 'Human'      # Human, Machine (naming scheme) or File (ConfigurationFile)
+        CustomName           = ''
         ReportFolder         = ''
         ContinueOnError      = $false
         DryRun               = $false
@@ -500,15 +510,18 @@ function ConvertTo-PlatformVariant {
     # Anything we do not recognise is carried along untouched so a round trip through the editor
     # does not silently delete someone's "Comment" or "Owner" field.
     $extra = [ordered]@{}
+    # An entry that is already normalised (or comes from the editor) carries its unknown fields
+    # in an "Extra" dictionary; a raw JSON entry carries them as ordinary properties.
     $sourceExtra = Get-ObjectProperty -InputObject $Entry -Name 'Extra'
-    if ($Entry -is [System.Collections.IDictionary]) {
-        if ($sourceExtra -is [System.Collections.IDictionary]) {
-            foreach ($key in @($sourceExtra.Keys)) { $extra[[string]$key] = $sourceExtra[$key] }
-        }
+    $hasExtraDictionary = ($sourceExtra -is [System.Collections.IDictionary])
+    if ($hasExtraDictionary) {
+        foreach ($key in @($sourceExtra.Keys)) { $extra[[string]$key] = $sourceExtra[$key] }
     }
-    else {
+    if ($Entry -isnot [System.Collections.IDictionary]) {
         foreach ($property in $Entry.PSObject.Properties) {
-            if ($knownProperties -notcontains $property.Name) { $extra[$property.Name] = $property.Value }
+            if ($knownProperties -contains $property.Name) { continue }
+            if ($hasExtraDictionary -and $property.Name -ieq 'Extra') { continue }
+            $extra[$property.Name] = $property.Value
         }
     }
 
@@ -773,6 +786,80 @@ function Save-PlatformVariantConfiguration {
     }
     [System.IO.File]::WriteAllText($fullPath, $json + [System.Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
     return $fullPath
+}
+
+function Get-PlatformNamingScheme {
+    <#
+        .SYNOPSIS
+        The standard platform names per vault type, as suffixes added to a custom name.
+        Without -VaultType it returns the whole table (vault type -> suffixes).
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$VaultType
+    )
+
+    if ([string]::IsNullOrWhiteSpace($VaultType)) {
+        $copy = [ordered]@{}
+        foreach ($key in @($script:NamingSchemes.Keys)) { $copy[$key] = @($script:NamingSchemes[$key]) }
+        return $copy
+    }
+    foreach ($key in @($script:NamingSchemes.Keys)) {
+        if ($key -ieq $VaultType) { return @($script:NamingSchemes[$key]) }
+    }
+    throw "Unknown vault type '$VaultType'. Use one of: $(@($script:NamingSchemes.Keys) -join ', ')."
+}
+
+function New-PlatformVariantSet {
+    <#
+        .SYNOPSIS
+        Builds the standard set of platforms for a vault type from one custom name, ready to pass
+        to Invoke-PlatformVariantImport -Platforms. Platform ID and platform name are the same.
+
+        .EXAMPLE
+        New-PlatformVariantSet -VaultType Human -CustomName MyApp
+        # MyApp-PROD, MyApp-PrePROD, MyApp-PROD-MAN, MyApp-PrePROD-MAN
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$VaultType,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$CustomName,
+
+        # Standard platforms to leave out: the full ID (MyApp-PROD-MAN) or just the suffix (-PROD-MAN).
+        [string[]]$ExcludePlatformId,
+
+        # Extra platform IDs to create on top of the standard ones.
+        [string[]]$AdditionalPlatformId
+    )
+
+    $base = ([string]$CustomName).Trim()
+    if ([string]::IsNullOrWhiteSpace($base)) { throw 'A custom name is required to build the platform names.' }
+
+    $suffixes = @(Get-PlatformNamingScheme -VaultType $VaultType)
+    $excluded = @($ExcludePlatformId | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() })
+    foreach ($item in $excluded) {
+        # A typo here would silently create the platform that was meant to be left out.
+        if (@($suffixes | Where-Object { $_ -ieq $item -or "$base$_" -ieq $item }).Count -eq 0) {
+            throw "Cannot exclude '$item': it is not one of the standard $VaultType platforms ($(@($suffixes | ForEach-Object { "$base$_" }) -join ', '))."
+        }
+    }
+
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($suffix in $suffixes) {
+        $name = "$base$suffix"
+        if (@($excluded | Where-Object { $_ -ieq $suffix -or $_ -ieq $name }).Count -gt 0) { continue }
+        $names.Add($name)
+    }
+    foreach ($item in @($AdditionalPlatformId | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $name = $item.Trim()
+        if (@($names | Where-Object { $_ -ieq $name }).Count -eq 0) { $names.Add($name) }
+    }
+
+    return @($names | ForEach-Object { ConvertTo-PlatformVariant -Entry @{ PlatformId = $_; PlatformName = $_ } })
 }
 
 function Get-PlatformSettingPathSuggestion {
@@ -1251,8 +1338,11 @@ function Invoke-PlatformVariantImport {
 
         [string]$SourcePlatformId,
 
-        [Parameter(Mandatory = $true)]
+        # What to create: either a JSON configuration file, or the platform entries themselves
+        # (for example from New-PlatformVariantSet). Exactly one of the two.
         [string]$ConfigurationFile,
+
+        [object[]]$Platforms,
 
         [string]$ReportPath,
         [string]$LogPath,
@@ -1314,7 +1404,13 @@ function Invoke-PlatformVariantImport {
 
         # --- inputs -------------------------------------------------------------------------
         $zipPath = Resolve-ExistingFile -Path $SourcePlatformZip -Label 'Source platform ZIP' -Extension '.zip'
-        $configPath = Resolve-ExistingFile -Path $ConfigurationFile -Label 'Configuration file' -Extension '.json'
+        $fromList = $PSBoundParameters.ContainsKey('Platforms')
+        if ($fromList -and -not [string]::IsNullOrWhiteSpace($ConfigurationFile)) {
+            throw 'Pass either -Platforms or -ConfigurationFile, not both.'
+        }
+        if (-not $fromList -and [string]::IsNullOrWhiteSpace($ConfigurationFile)) {
+            throw 'Nothing to create: pass -Platforms or -ConfigurationFile.'
+        }
 
         $package = Get-PlatformPackageInfo -Path $zipPath
         if ($package.SizeBytes -gt 20MB) {
@@ -1333,9 +1429,16 @@ function Invoke-PlatformVariantImport {
             throw "The source platform ID '$sourceId' does not match the platform in the ZIP ('$($package.PlatformId)')."
         }
 
-        Write-EngineLog "Reading configuration '$configPath'."
-        $configuration = Read-PlatformVariantConfiguration -Path $configPath
-        $variants = @($configuration.Platforms)
+        if ($fromList) {
+            $variants = @($Platforms | Where-Object { $null -ne $_ } | ForEach-Object { ConvertTo-PlatformVariant -Entry $_ })
+            Write-EngineLog "Creating $($variants.Count) platform(s) from the given list: $(@($variants | ForEach-Object { $_.PlatformId }) -join ', ')."
+        }
+        else {
+            $configPath = Resolve-ExistingFile -Path $ConfigurationFile -Label 'Configuration file' -Extension '.json'
+            Write-EngineLog "Reading configuration '$configPath'."
+            $configuration = Read-PlatformVariantConfiguration -Path $configPath
+            $variants = @($configuration.Platforms)
+        }
 
         $issues = @(Test-PlatformVariantConfiguration -Platforms $variants -SourcePlatformId $sourceId)
         foreach ($issue in $issues) {
@@ -1606,6 +1709,8 @@ Export-ModuleMember -Function @(
     'ConvertTo-PlatformVariantJson'
     'Save-PlatformVariantConfiguration'
     'Get-PlatformSettingPathSuggestion'
+    'Get-PlatformNamingScheme'
+    'New-PlatformVariantSet'
     'Test-PvwaConnection'
     'Invoke-PlatformVariantImport'
 )
