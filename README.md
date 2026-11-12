@@ -205,6 +205,30 @@ as it is first and then creates the variants from it. Things to know:
 - If PVWA reports the platform under a different ID than the one read from the ZIP, the ID PVWA
   reports is used as the source for the rest of the run.
 
+## When the logon fails
+
+The log says what was attempted and what PVWA answered, for example:
+
+```
+Logon to https://pvwa.company.com as 'jdoe' with LDAP authentication failed.
+PVWA said: [401] Authentication failure for User [jdoe]. (ITATS004E)
+```
+
+- **The password is not altered.** The tool hands it to psPAS without reading it, and psPAS sends it
+  as a JSON string, so `/ \ " ' < > & %` and non-English letters reach PVWA exactly as typed.
+  A password that works on the PVWA page is not refused here because of its characters.
+- **Check the authentication method first.** *Authentication* must be the method you choose on the
+  PVWA logon page. A correct user name and password sent to the wrong method is normally refused
+  with the same "Authentication failure" as a wrong password.
+- **Write the user name the same way** as on the PVWA page.
+- **RADIUS:** also check the one-time code and whether it is appended to the password or sent as a challenge.
+- **To tell the tool apart from psPAS and PVWA**, log on with psPAS alone. If this fails the same
+  way, the cause is not in this tool:
+
+  ```powershell
+  New-PASSession -BaseURI https://pvwa.company.com -Credential (Get-Credential) -type LDAP
+  ```
+
 ## Tests
 
 ```powershell

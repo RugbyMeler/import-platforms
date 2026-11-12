@@ -34,6 +34,8 @@ function Reset-MockVault {
     $state.SideBySideConsumesPackage = $true
     $state.FailSettingsFor = @()
     $state.DelayMilliseconds = 0
+    $state.LastPasswordReceived = $null # what the logon call was given (fake test passwords only)
+    $state.ExpectedPassword = ''        # when set, any other password is refused like a real PVWA would
     $state.RejectPackage = $false       # PVWA refuses the ZIP outright
     $state.ImportAsId = ''              # PVWA reads a different platform ID out of the ZIP
 }
@@ -102,7 +104,16 @@ function New-PASSession {
         [switch]$SkipCertificateCheck
     )
     $state = Get-MockState
-    if ($Credential.GetNetworkCredential().Password -eq 'wrong') { throw 'Mock psPAS: Authentication failure for User.' }
+    # What a real PVWA would receive: psPAS reads the password this way and sends it as JSON.
+    $received = $Credential.GetNetworkCredential().Password
+    $state.LastPasswordReceived = $received
+    if ($received -eq 'wrong' -or ($state.ExpectedPassword -and $received -cne $state.ExpectedPassword)) {
+        # Same shape as the real module: "[status] message" with PVWA's error code as the error ID.
+        $failure = New-Object System.Management.Automation.ErrorRecord(
+            (New-Object System.Exception("[401] Authentication failure for User [$($Credential.UserName)].")),
+            'ITATS004E', [System.Management.Automation.ErrorCategory]::AuthenticationError, $null)
+        $PSCmdlet.ThrowTerminatingError($failure)
+    }
     $state.Connected = $true
     $state.Sessions++
     $state.LastLogon = @{
