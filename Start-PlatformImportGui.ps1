@@ -61,6 +61,8 @@ $script:Job = $null
 $script:LastLoggedMessage = ''
 $script:LastReportFolder = ''
 $script:AutoSourceId = ''
+$script:Plan = New-Object System.Collections.ArrayList     # platforms to create when a naming scheme is used
+$script:PlanSignature = $null
 $script:CommittingRow = $false
 $script:PendingCommitGrid = $null
 $script:StateLabels = @('Leave as PVWA creates it', 'Activate', 'Deactivate')
@@ -86,7 +88,7 @@ $script:Brush = @{
 }
 
 $script:ResultsTable = New-Object System.Data.DataTable
-foreach ($column in @('PlatformId', 'PlatformName', 'Status', 'Message', 'Duration')) {
+foreach ($column in @('PlatformId', 'PlatformName', 'Status', 'Message', 'Duration', 'Key')) {
     [void]$script:ResultsTable.Columns.Add($column, [string])
 }
 $ui.ResultsGrid.ItemsSource = $script:ResultsTable.DefaultView
@@ -184,6 +186,8 @@ function Save-UiSettings {
         SourcePlatformZip    = Get-CleanPath $ui.ZipPathBox.Text
         SourcePlatformId     = $ui.SourceIdBox.Text.Trim()
         ConfigurationFile    = Get-CleanPath $ui.ConfigPathBox.Text
+        VariantSource        = Get-VariantSource
+        CustomName           = $ui.CustomNameBox.Text.Trim()
         ReportFolder         = Get-CleanPath $ui.ReportFolderBox.Text
         ContinueOnError      = [bool]$ui.ContinueBox.IsChecked
         DryRun               = [bool]$ui.DryRunBox.IsChecked
@@ -218,6 +222,12 @@ function Set-UiFromSettings {
         $ui.ZipPathBox.Text = $Settings.SourcePlatformZip
         $ui.SourceIdBox.Text = $Settings.SourcePlatformId
         $ui.ConfigPathBox.Text = $Settings.ConfigurationFile
+        $ui.CustomNameBox.Text = $Settings.CustomName
+        switch ($Settings.VariantSource) {
+            'File' { $ui.SourceFileRadio.IsChecked = $true }
+            'Machine' { $ui.SourceMachineRadio.IsChecked = $true }
+            default { $ui.SourceHumanRadio.IsChecked = $true }
+        }
         $ui.ReportFolderBox.Text = if ($Settings.ReportFolder) { $Settings.ReportFolder } else { Join-Path -Path $PSScriptRoot -ChildPath 'reports' }
         $ui.ContinueBox.IsChecked = $Settings.ContinueOnError
         $ui.DryRunBox.IsChecked = $Settings.DryRun
@@ -271,6 +281,10 @@ function Update-PackageInfo {
             # Follow the ZIP unless the user typed an ID of their own.
             $current = $ui.SourceIdBox.Text.Trim()
             if (-not $current -or $current -eq $script:AutoSourceId) { $ui.SourceIdBox.Text = $info.PlatformId }
+            # The custom name starts as the platform ID. A different ZIP means a different
+            # platform family, so the name follows it rather than keep naming the old one.
+            $changedPackage = ($script:AutoSourceId -and $script:AutoSourceId -ine $info.PlatformId)
+            if (-not $ui.CustomNameBox.Text.Trim() -or $changedPackage) { $ui.CustomNameBox.Text = $info.PlatformId }
             $script:AutoSourceId = $info.PlatformId
         }
         else {
@@ -284,36 +298,161 @@ function Update-PackageInfo {
     }
 }
 
-function Update-ConfigSummary {
-    $path = Get-CleanPath $ui.ConfigPathBox.Text
-    if (-not $path) {
-        $ui.ConfigSummaryText.Text = 'Pick a JSON file, or build one on the Platform editor tab.'
-        $ui.ConfigSummaryText.Foreground = $script:Brush['Muted']
-        return
+function Get-VariantSource {
+    # Where the list of platforms comes from: a naming scheme (Human, Machine) or a JSON file.
+    if ($ui.SourceFileRadio.IsChecked) { return 'File' }
+    if ($ui.SourceMachineRadio.IsChecked) { return 'Machine' }
+    return 'Human'
+}
+
+function Update-SourcePanels {
+    $fromFile = ((Get-VariantSource) -eq 'File')
+    $ui.SchemePanel.Visibility = if ($fromFile) { 'Collapsed' } else { 'Visible' }
+    $ui.FilePanel.Visibility = if ($fromFile) { 'Visible' } else { 'Collapsed' }
+    $ui.PlanToolbar.Visibility = if ($fromFile) { 'Collapsed' } else { 'Visible' }
+    $ui.EditConfigButton.Content = if ($fromFile) { 'Open in editor' } else { 'Customise in editor' }
+    $ui.EditConfigButton.ToolTip = if ($fromFile) { 'Edit this file on the Platform editor tab.' } else { 'Take this list to the Platform editor to add setting changes or PSM configuration, and save it as a JSON file.' }
+}
+
+function Get-PlannedVariants {
+    # The platforms the naming scheme list currently holds, as engine entries.
+    foreach ($item in $script:Plan) {
+        ConvertTo-PlatformVariant -Entry @{ PlatformId = $item.Id; PlatformName = $item.Id }
     }
+}
+
+function Update-ConfigSummary {
+    # The one-line verdict under "Platforms to create".
+    $set = {
+        param([string]$Text, [string]$Tone)
+        $ui.ConfigSummaryText.Text = $Text
+        $ui.ConfigSummaryText.Foreground = $script:Brush[$Tone]
+    }
+    $source = Get-VariantSource
     try {
-        $configuration = Read-PlatformVariantConfiguration -Path $path
-        $issues = @(Test-PlatformVariantConfiguration -Platforms $configuration.Platforms -SourcePlatformId $ui.SourceIdBox.Text.Trim())
-        $errors = @($issues | Where-Object { $_.Severity -eq 'Error' }).Count
-        $warnings = $issues.Count - $errors
-        $text = "$($configuration.Platforms.Count) variant(s)"
-        if ($errors -gt 0) {
-            $ui.ConfigSummaryText.Text = "$text, $errors error(s) - open in the editor to fix."
-            $ui.ConfigSummaryText.Foreground = $script:Brush['Bad']
-        }
-        elseif ($warnings -gt 0) {
-            $ui.ConfigSummaryText.Text = "$text, valid, $warnings warning(s)."
-            $ui.ConfigSummaryText.Foreground = $script:Brush['Warn']
+        if ($source -eq 'File') {
+            $path = Get-CleanPath $ui.ConfigPathBox.Text
+            if (-not $path) { & $set 'Pick a JSON file, or build one on the Platform editor tab.' 'Muted'; return }
+            $variants = @((Read-PlatformVariantConfiguration -Path $path).Platforms)
+            $fixHint = ' - open in the editor to fix.'
         }
         else {
-            $ui.ConfigSummaryText.Text = "$text, valid."
-            $ui.ConfigSummaryText.Foreground = $script:Brush['Good']
+            if (-not $ui.CustomNameBox.Text.Trim()) {
+                & $set 'Enter the custom name, or pick the ZIP to use its platform ID.' 'Warn'
+                return
+            }
+            if ($script:Plan.Count -eq 0) { & $set 'The list is empty. Add a platform or choose Reset list.' 'Warn'; return }
+            $variants = @(Get-PlannedVariants)
+            $fixHint = ''
+        }
+
+        $issues = @(Test-PlatformVariantConfiguration -Platforms $variants -SourcePlatformId $ui.SourceIdBox.Text.Trim())
+        $errors = @($issues | Where-Object { $_.Severity -eq 'Error' })
+        $warnings = $issues.Count - $errors.Count
+        $text = "$($variants.Count) platform(s)"
+        if ($errors.Count -gt 0) {
+            $first = if ($fixHint) { $fixHint } else { ": $($errors[0].PlatformId) - $($errors[0].Message)" }
+            & $set "$text, $($errors.Count) error(s)$first" 'Bad'
+        }
+        elseif ($warnings -gt 0) { & $set "$text, valid, $warnings warning(s)." 'Warn' }
+        else { & $set "$text, valid." 'Good' }
+    }
+    catch {
+        & $set $_.Exception.Message 'Bad'
+    }
+}
+
+function Show-Plan {
+    # Lists what a run would create. The same list shows the results afterwards, so it is only
+    # rebuilt when the plan itself changed (or -Force), not every time a field loses focus.
+    param([switch]$Force)
+
+    if ($null -ne $script:Job) { return }
+    $source = Get-VariantSource
+    $variants = @()
+    $stamp = ''
+    try {
+        if ($source -eq 'File') {
+            $path = Get-CleanPath $ui.ConfigPathBox.Text
+            if ($path -and (Test-Path -LiteralPath $path -PathType Leaf)) {
+                $stamp = [string](Get-Item -LiteralPath $path).LastWriteTimeUtc.Ticks
+                $variants = @((Read-PlatformVariantConfiguration -Path $path).Platforms)
+            }
+        }
+        else {
+            $variants = @(Get-PlannedVariants)
         }
     }
     catch {
-        $ui.ConfigSummaryText.Text = $_.Exception.Message
-        $ui.ConfigSummaryText.Foreground = $script:Brush['Bad']
+        $variants = @()
     }
+
+    $signature = "$source|$stamp|" + (@($variants | ForEach-Object { "$($_.PlatformId)=$($_.PlatformName)" }) -join '|')
+    if ($Force -or $signature -ne $script:PlanSignature) {
+        $script:PlanSignature = $signature
+        $script:ResultsTable.Rows.Clear()
+        # Until there is a custom name the scheme entries are only suffixes; show where the name goes.
+        $needsName = ($source -ne 'File' -and -not $ui.CustomNameBox.Text.Trim())
+        foreach ($variant in $variants) {
+            $id = [string]$variant.PlatformId
+            $shownId = if ($needsName -and $id.StartsWith('-')) { "<name>$id" } else { $id }
+            $shownName = if ($needsName -and $id.StartsWith('-')) { $shownId } else { [string]$variant.PlatformName }
+            [void]$script:ResultsTable.Rows.Add($shownId, $shownName, 'Planned', '', '', $id)
+        }
+        $ui.RunProgress.Value = 0
+        $ui.ProgressText.Text = if ($variants.Count -gt 0) { "$($variants.Count) platform(s) planned." } else { 'Not started.' }
+    }
+    Update-ConfigSummary
+}
+
+function Update-Plan {
+    # Scheme entries follow the custom name; entries typed in as a full ID stay as they are.
+    $base = $ui.CustomNameBox.Text.Trim()
+    foreach ($item in $script:Plan) {
+        if ($null -ne $item.Suffix) { $item.Id = "$base$($item.Suffix)" }
+    }
+    Show-Plan
+}
+
+function Reset-Plan {
+    # Back to exactly the standard platforms of the selected vault type.
+    $script:Plan.Clear()
+    $source = Get-VariantSource
+    if ($source -ne 'File') {
+        foreach ($suffix in @(Get-PlatformNamingScheme -VaultType $source)) {
+            [void]$script:Plan.Add(@{ Suffix = $suffix; Id = '' })
+        }
+    }
+    Update-Plan
+}
+
+function Add-PlanEntry {
+    $text = $ui.PlanAddBox.Text.Trim()
+    if (-not $text) { return }
+    # "-DR" means "<custom name>-DR" and keeps following the custom name; anything else is a full ID.
+    $entry = if ($text.StartsWith('-')) { @{ Suffix = $text; Id = "$($ui.CustomNameBox.Text.Trim())$text" } } else { @{ Suffix = $null; Id = $text } }
+    foreach ($item in $script:Plan) {
+        if ($item.Id -ieq $entry.Id) { Set-Status "'$($entry.Id)' is already on the list."; return }
+    }
+    [void]$script:Plan.Add($entry)
+    $ui.PlanAddBox.Text = ''
+    Show-Plan
+    Set-Status "Added '$($entry.Id)'."
+}
+
+function Remove-PlanEntry {
+    # Key holds the real ID; after a run the rows come from the engine and only have PlatformId.
+    $ids = @($ui.ResultsGrid.SelectedItems | Where-Object { $_ -is [System.Data.DataRowView] } | ForEach-Object {
+            if ($_['Key'] -is [string] -and $_['Key']) { $_['Key'] } else { [string]$_['PlatformId'] }
+        })
+    if ($ids.Count -eq 0) { Set-Status 'Select one or more platforms in the list first.'; return }
+    foreach ($id in $ids) {
+        for ($index = 0; $index -lt $script:Plan.Count; $index++) {
+            if ($script:Plan[$index].Id -ieq $id) { $script:Plan.RemoveAt($index); break }
+        }
+    }
+    Show-Plan -Force
+    Set-Status "Removed $($ids -join ', '). Reset list brings the standard platforms back."
 }
 
 function Get-ConnectionParameters {
@@ -352,15 +491,16 @@ function Get-ConnectionParameters {
 }
 
 function Test-ImportFiles {
-    # Offline check of the ZIP and the configuration. Returns a summary object, or $null when
-    # the files cannot even be read (the user has been told).
+    # Offline check of the ZIP and the list of platforms. Returns a summary object, or $null when
+    # the inputs cannot even be read (the user has been told).
     param([switch]$Quiet)
 
     $zip = Get-CleanPath $ui.ZipPathBox.Text
-    $config = Get-CleanPath $ui.ConfigPathBox.Text
+    $source = Get-VariantSource
+    $configPath = $null
+    $platforms = $null
     try {
         if (-not $zip) { throw 'Pick the platform ZIP first.' }
-        if (-not $config) { throw 'Pick the configuration file first, or create one on the Platform editor tab.' }
         $package = Get-PlatformPackageInfo -Path $zip
         $sourceId = $ui.SourceIdBox.Text.Trim()
         if (-not $sourceId) { $sourceId = $package.PlatformId }
@@ -368,8 +508,21 @@ function Test-ImportFiles {
         if ($package.PlatformId -and $package.PlatformId -ine $sourceId) {
             throw "The source platform ID '$sourceId' does not match the platform in the ZIP ('$($package.PlatformId)')."
         }
-        $configuration = Read-PlatformVariantConfiguration -Path $config
-        $issues = @(Test-PlatformVariantConfiguration -Platforms $configuration.Platforms -SourcePlatformId $sourceId)
+
+        if ($source -eq 'File') {
+            $config = Get-CleanPath $ui.ConfigPathBox.Text
+            if (-not $config) { throw 'Pick the configuration file first, or create one on the Platform editor tab.' }
+            $configuration = Read-PlatformVariantConfiguration -Path $config
+            $configPath = $configuration.Path
+            $variants = @($configuration.Platforms)
+        }
+        else {
+            if (-not $ui.CustomNameBox.Text.Trim()) { throw 'Enter the custom name first. It is the first part of every platform name.' }
+            if ($script:Plan.Count -eq 0) { throw 'The list of platforms is empty. Add a platform or choose Reset list.' }
+            $variants = @(Get-PlannedVariants)
+            $platforms = $variants
+        }
+        $issues = @(Test-PlatformVariantConfiguration -Platforms $variants -SourcePlatformId $sourceId)
     }
     catch {
         Add-LogLine -Level ERROR -Message $_.Exception.Message
@@ -384,9 +537,11 @@ function Test-ImportFiles {
     }
     return [PSCustomObject]@{
         ZipPath       = $package.Path
-        ConfigPath    = $configuration.Path
+        ConfigPath    = $configPath          # set when the list comes from a file
+        Platforms     = $platforms           # set when the list comes from a naming scheme
+        Names         = @($variants | ForEach-Object { [string]$_.PlatformId })
         SourceId      = $sourceId
-        PlatformCount = $configuration.Platforms.Count
+        PlatformCount = $variants.Count
         Errors        = @($issues | Where-Object { $_.Severity -eq 'Error' }).Count
         Warnings      = @($issues | Where-Object { $_.Severity -ne 'Error' }).Count
     }
@@ -401,6 +556,7 @@ function Set-Busy {
     $ui.ImportInputs.IsEnabled = -not $Busy
     $ui.RunButton.IsEnabled = -not $Busy
     $ui.ValidateButton.IsEnabled = -not $Busy
+    $ui.PlanToolbar.IsEnabled = -not $Busy
     $ui.CancelButton.IsEnabled = ($Busy -and $null -ne $script:Job -and $script:Job.Mode -eq 'Import')
     $ui.RunProgress.IsIndeterminate = ($Busy -and $null -ne $script:Job -and $script:Job.Mode -ne 'Import')
 }
@@ -575,11 +731,11 @@ function Start-Validation {
     $check = Test-ImportFiles
     if ($null -eq $check) { Set-Status 'Validation failed.'; return }
     if ($check.Errors -gt 0) {
-        $text = "$($check.PlatformCount) variant(s) from '$($check.SourceId)': $($check.Errors) error(s), $($check.Warnings) warning(s). See the log."
+        $text = "$($check.PlatformCount) platform(s) from '$($check.SourceId)': $($check.Errors) error(s), $($check.Warnings) warning(s). See the log."
         Add-LogLine -Level ERROR -Message $text
     }
     else {
-        $text = "$($check.PlatformCount) variant(s) from '$($check.SourceId)': valid, $($check.Warnings) warning(s). Nothing was sent to PVWA."
+        $text = "$($check.PlatformCount) platform(s) from '$($check.SourceId)': valid, $($check.Warnings) warning(s). Nothing was sent to PVWA."
         Add-LogLine -Level SUCCESS -Message $text
     }
     $ui.ProgressText.Text = $text
@@ -590,7 +746,8 @@ function Start-Import {
     if ($null -ne $script:Job) { return }
 
     # The editor may hold newer content than the file the import is about to read.
-    if ($script:Editor.Dirty -and $script:Editor.Path -and ($script:Editor.Path -ieq (Get-CleanPath $ui.ConfigPathBox.Text))) {
+    $fromFile = ((Get-VariantSource) -eq 'File')
+    if ($fromFile -and $script:Editor.Dirty -and $script:Editor.Path -and ($script:Editor.Path -ieq (Get-CleanPath $ui.ConfigPathBox.Text))) {
         $answer = Show-Message -Text "The Platform editor has unsaved changes to this configuration.`n`nSave them before running?" -Buttons YesNoCancel -Icon Question
         if ($answer -eq 'Cancel') { return }
         if ($answer -eq 'Yes') { if (-not (Save-EditorFile -Path $script:Editor.Path)) { return } }
@@ -602,13 +759,17 @@ function Start-Import {
     $check = Test-ImportFiles
     if ($null -eq $check) { return }
     if ($check.Errors -gt 0) {
-        $null = Show-Message -Text "The configuration has $($check.Errors) error(s). They are listed in the log; fix them in the Platform editor first." -Icon Warning
+        $where = if ($fromFile) { 'fix them in the Platform editor first' } else { 'correct the custom name or the list first' }
+        $null = Show-Message -Text "The list of platforms has $($check.Errors) error(s). They are shown in the log; $where." -Icon Warning
         return
     }
 
     $dryRun = [bool]$ui.DryRunBox.IsChecked
     if (-not $dryRun) {
-        $question = "Create or update $($check.PlatformCount) platform variant(s) of '$($check.SourceId)' on`n$(Resolve-PvwaBaseUri -Url $parameters.PVWAURL)`nas $($parameters.Credential.UserName)?"
+        # Name every platform: this is the last look before they are created in the Vault.
+        $shown = @($check.Names | Select-Object -First 12 | ForEach-Object { "    $_" })
+        if ($check.Names.Count -gt 12) { $shown += "    ... and $($check.Names.Count - 12) more" }
+        $question = "Create or update $($check.PlatformCount) platform(s) from '$($check.SourceId)' on`n$(Resolve-PvwaBaseUri -Url $parameters.PVWAURL)`nas $($parameters.Credential.UserName)?`n`n$($shown -join "`n")"
         if ((Show-Message -Text $question -Buttons YesNo -Icon Question) -ne 'Yes') { return }
     }
 
@@ -623,15 +784,15 @@ function Start-Import {
     $suffix = if ($dryRun) { '-dryrun' } else { '' }
     $parameters['SourcePlatformZip'] = $check.ZipPath
     $parameters['SourcePlatformId'] = $check.SourceId
-    $parameters['ConfigurationFile'] = $check.ConfigPath
+    if ($null -ne $check.Platforms) { $parameters['Platforms'] = $check.Platforms }
+    else { $parameters['ConfigurationFile'] = $check.ConfigPath }
     $parameters['ReportPath'] = Join-Path -Path $reportFolder -ChildPath "PlatformImport-$stamp$suffix.csv"
     $parameters['LogPath'] = Join-Path -Path $reportFolder -ChildPath "PlatformImport-$stamp$suffix.log"
     $parameters['ContinueOnError'] = [bool]$ui.ContinueBox.IsChecked
     $parameters['WhatIf'] = $dryRun
     $script:LastReportFolder = $reportFolder
 
-    $script:ResultsTable.Rows.Clear()
-    $ui.RunProgress.Value = 0
+    Show-Plan -Force
     $ui.ProgressText.Text = 'Connecting...'
     Add-LogLine -Level INFO -Message $(if ($dryRun) { '--- Dry run ---' } else { '--- Import ---' })
     Start-EngineJob -Mode 'Import' -Parameters $parameters
@@ -931,7 +1092,7 @@ function Save-EditorFile {
     # First file ever saved becomes the import's configuration; an already chosen one is kept.
     $importPath = Get-CleanPath $ui.ConfigPathBox.Text
     if (-not $importPath) { $ui.ConfigPathBox.Text = $saved }
-    Update-ConfigSummary
+    Show-Plan
     Save-UiSettings
     return $true
 }
@@ -1035,17 +1196,44 @@ $ui.OtpModeBox.add_SelectionChanged({ Save-UiSettings })
 $ui.DryRunBox.add_Click({ $ui.RunButton.Content = if ($ui.DryRunBox.IsChecked) { 'Run dry run' } else { 'Run import' } })
 
 # Paths pasted with quotes ("Copy as path" in Explorer) are shown the way they are used.
-$ui.ZipPathBox.add_LostFocus({ $ui.ZipPathBox.Text = Get-CleanPath $ui.ZipPathBox.Text; Update-PackageInfo; Update-ConfigSummary; Save-UiSettings })
-$ui.ConfigPathBox.add_LostFocus({ $ui.ConfigPathBox.Text = Get-CleanPath $ui.ConfigPathBox.Text; Update-ConfigSummary; Save-UiSettings })
+$ui.ZipPathBox.add_LostFocus({ $ui.ZipPathBox.Text = Get-CleanPath $ui.ZipPathBox.Text; Update-PackageInfo; Show-Plan; Save-UiSettings })
+$ui.ConfigPathBox.add_LostFocus({ $ui.ConfigPathBox.Text = Get-CleanPath $ui.ConfigPathBox.Text; Show-Plan; Save-UiSettings })
 $ui.SourceIdBox.add_LostFocus({ Update-ConfigSummary })
+
+# --- what to create: vault type switch, custom name, and the list itself ----------------------
+foreach ($name in @('SourceHumanRadio', 'SourceMachineRadio', 'SourceFileRadio')) {
+    $ui[$name].add_Checked({
+            if ($script:Loading) { return }
+            Update-SourcePanels
+            # Another vault type means another standard set, so the list starts over.
+            if ((Get-VariantSource) -eq 'File') { Show-Plan -Force } else { Reset-Plan }
+            Save-UiSettings
+        })
+}
+$ui.CustomNameBox.add_TextChanged({ if (-not $script:Loading) { Update-Plan } })
+$ui.CustomNameBox.add_LostFocus({ Save-UiSettings })
+$ui.PlanAddButton.add_Click({ Add-PlanEntry })
+$ui.PlanAddBox.add_KeyDown({
+        param($sender, $e)
+        if ($e.Key -eq [System.Windows.Input.Key]::Return) { $e.Handled = $true; Add-PlanEntry }
+    })
+$ui.PlanRemoveButton.add_Click({ Remove-PlanEntry })
+$ui.PlanResetButton.add_Click({ Reset-Plan; Show-Plan -Force; Set-Status 'The list is back to the standard platforms.' })
+$ui.ResultsGrid.add_PreviewKeyDown({
+        param($sender, $e)
+        if ($e.Key -eq [System.Windows.Input.Key]::Delete -and $null -eq $script:Job -and (Get-VariantSource) -ne 'File') {
+            $e.Handled = $true
+            Remove-PlanEntry
+        }
+    })
 
 $ui.BrowseZipButton.add_Click({
         $path = Select-File -Title 'Select the platform ZIP' -Filter 'Platform packages (*.zip)|*.zip|All files (*.*)|*.*' -Current $ui.ZipPathBox.Text
-        if ($path) { $ui.ZipPathBox.Text = $path; Update-PackageInfo; Update-ConfigSummary; Save-UiSettings }
+        if ($path) { $ui.ZipPathBox.Text = $path; Update-PackageInfo; Show-Plan; Save-UiSettings }
     })
 $ui.BrowseConfigButton.add_Click({
         $path = Select-File -Title 'Select the platform configuration' -Filter 'JSON files (*.json)|*.json|All files (*.*)|*.*' -Current $ui.ConfigPathBox.Text
-        if ($path) { $ui.ConfigPathBox.Text = $path; Update-ConfigSummary; Save-UiSettings }
+        if ($path) { $ui.ConfigPathBox.Text = $path; Show-Plan; Save-UiSettings }
     })
 $ui.BrowseReportButton.add_Click({
         $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -1073,6 +1261,16 @@ $ui.OpenReportButton.add_Click({
         else { Set-Status 'No report has been written yet.' }
     })
 $ui.EditConfigButton.add_Click({
+        if ((Get-VariantSource) -ne 'File') {
+            # Hand the generated list to the editor as a new, unsaved document.
+            if (-not (Confirm-EditorChanges)) { return }
+            Set-EditorDocument -Variants @(Get-PlannedVariants) -Extra ([ordered]@{}) -Path ''
+            $script:Editor.Dirty = ($script:Editor.Platforms.Count -gt 0)
+            Update-EditorView
+            $ui.MainTabs.SelectedItem = $ui.EditorTab
+            Set-Status 'The list is in the editor. Save it as a JSON file, then choose "Use this file for the import".'
+            return
+        }
         $path = Get-CleanPath $ui.ConfigPathBox.Text
         if ($path -and (Test-Path -LiteralPath $path -PathType Leaf)) {
             $alreadyOpen = ($script:Editor.Path -and $script:Editor.Path -ieq (Resolve-Path -LiteralPath $path).ProviderPath)
@@ -1102,7 +1300,7 @@ $ui.EditorUseButton.add_Click({
             if (-not (Save-EditorFile -Path $script:Editor.Path)) { return }
         }
         $ui.ConfigPathBox.Text = $script:Editor.Path
-        Update-ConfigSummary
+        if ($ui.SourceFileRadio.IsChecked) { Show-Plan -Force } else { $ui.SourceFileRadio.IsChecked = $true }
         Save-UiSettings
         $ui.MainTabs.SelectedItem = $ui.ImportTab
     })
@@ -1247,7 +1445,8 @@ Set-UiFromSettings -Settings $script:Settings
 $ui.RunButton.Content = if ($ui.DryRunBox.IsChecked) { 'Run dry run' } else { 'Run import' }
 $ui.SettingsPathText.Text = "Settings: $(Get-PlatformImportSettingsPath)"
 Update-PackageInfo
-Update-ConfigSummary
+Update-SourcePanels
+if ((Get-VariantSource) -eq 'File') { Show-Plan -Force } else { Reset-Plan }
 
 # Reopen what was being edited last time; otherwise show the import's configuration.
 $reopened = $false

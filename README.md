@@ -36,13 +36,41 @@ Double-click `Start-PlatformImportGui.cmd`, or run:
 1. *PVWA connection*: address, authentication type (CyberArk, LDAP, RADIUS, Windows), user name, password.
    **Test connection** logs on, shows the PVWA version and logs off again.
 2. *Source platform*: the platform ZIP. The platform ID is read from the ZIP.
-3. *Variants to create*: the JSON configuration. **Open in editor** takes you to the editor tab.
+3. *Platforms to create*: the vault type — **Human** or **Machine** — and a custom name. The list on
+   the right fills itself with the standard platforms for that vault type (see below). Or choose
+   **From a JSON file** to use a configuration file instead.
 4. *Run*: where reports go, **Dry run** and **Continue after a failure**.
 
-**Validate** checks the ZIP and the configuration without logging on.
+**Validate** checks the ZIP and the list of platforms without logging on.
 **Run import** asks for confirmation, then shows one line per platform plus a live log.
 **Cancel** stops before the next platform (the one in progress is finished first).
 Every run writes a CSV report and a log file to the report folder.
+
+### Standard platform names
+
+Pick the vault type and the list is ready to import, with nothing else to fill in:
+
+| Vault type | Platforms created for the custom name `MyApp` |
+|---|---|
+| Human | `MyApp-PROD`, `MyApp-PrePROD`, `MyApp-PROD-MAN`, `MyApp-PrePROD-MAN` |
+| Machine | `MyApp-PROD-D`, `MyApp-PrePROD-D`, `MyApp-PROD-RT-RL`, `MyApp-PROD-RT-RS`, `MyApp-PrePROD-RT-RL`, `MyApp-PrePROD-RT-RS` |
+
+- **Custom name** starts as the platform ID found in the ZIP; type your own to change it and every
+  platform is renamed as you type. Picking a ZIP with a different platform resets it to that
+  platform's ID.
+- Each platform gets the same text as its ID and its name, and is otherwise an unchanged copy of
+  the source platform.
+- **Add a platform**: type an ID and press Enter. Start with a dash to build on the custom name:
+  `-DR` adds `MyApp-DR`.
+- **Remove selected** (or the Delete key) takes platforms off the list; select several with Ctrl or
+  Shift. **Reset list** brings the standard set back.
+- Changes to the list last until you switch vault type or close the window. They are deliberately
+  not remembered between sessions, so a new platform always starts from the full standard set.
+- **Customise in editor** hands the list to the Platform editor, where you can add setting changes
+  or PSM configuration and save it as a JSON file.
+
+The naming convention lives in one table, `$script:NamingSchemes`, at the top of
+`lib\PlatformVariants.psm1`.
 
 **Platform editor tab** — build the JSON without writing JSON:
 
@@ -57,7 +85,8 @@ Fields the editor does not know (your own `Comment`, `Owner`, …) are kept when
 ### What is remembered
 
 Everything you enter on the Import tab — PVWA address, authentication type, user name, file
-locations, options — plus the window size and the last file open in the editor is saved to
+locations, vault type, custom name, options — plus the window size and the last file open in the
+editor is saved to
 
 ```
 %APPDATA%\ImportPlatforms\settings.json
@@ -82,7 +111,16 @@ Delete the file to start from scratch.
 
 # Check the files only (no logon)
 .\Import-PlatformVariants.ps1 -SourcePlatformZip .\UnixSSH.zip -ConfigurationFile .\platforms.json -ValidateOnly
+
+# Standard platforms for a machine vault, no configuration file:
+# MyApp-PROD-D, MyApp-PrePROD-D, MyApp-PROD-RT-RL, ... minus one, plus MyApp-DR
+.\Import-PlatformVariants.ps1 -PVWAURL https://pvwa.company.com -SourcePlatformZip .\UnixSSH.zip `
+    -VaultType Machine -CustomName MyApp -ExcludePlatformId MyApp-PrePROD-RT-RS -AdditionalPlatformId MyApp-DR
 ```
+
+`-VaultType Human` or `Machine` replaces `-ConfigurationFile`. `-CustomName` defaults to the
+platform ID in the ZIP. The command line only uses a naming scheme when you pass `-VaultType`;
+it never picks one up from what was last selected in the GUI.
 
 When you leave out the PVWA address, authentication type, ZIP, configuration file or report
 location, the command line uses what the GUI (or `-SaveSettings`) saved, and offers the saved

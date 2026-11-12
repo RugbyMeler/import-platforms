@@ -25,7 +25,24 @@
     Platform ID inside the ZIP. Optional: it is read from the ZIP when omitted.
 
     .PARAMETER ConfigurationFile
-    JSON file describing the variants. See platforms.example.json.
+    JSON file describing the variants. See platforms.example.json. Not used with -VaultType.
+
+    .PARAMETER VaultType
+    Human or Machine: create the standard set of platforms for that vault type, named after
+    -CustomName, without a configuration file.
+      Human:   <name>-PROD, <name>-PrePROD, <name>-PROD-MAN, <name>-PrePROD-MAN
+      Machine: <name>-PROD-D, <name>-PrePROD-D, <name>-PROD-RT-RL, <name>-PROD-RT-RS,
+               <name>-PrePROD-RT-RL, <name>-PrePROD-RT-RS
+
+    .PARAMETER CustomName
+    First part of every platform name when -VaultType is used. Defaults to the platform ID in the ZIP.
+
+    .PARAMETER ExcludePlatformId
+    Standard platforms to leave out, as the full ID (MyApp-PROD-MAN) or the suffix in quotes
+    ('-PROD-MAN'; unquoted, PowerShell would read the leading dash as a parameter name).
+
+    .PARAMETER AdditionalPlatformId
+    Extra platform IDs to create on top of the standard ones.
 
     .PARAMETER Type
     Authentication type: CyberArk, LDAP, RADIUS or Windows.
@@ -51,6 +68,11 @@
     .\Import-PlatformVariants.ps1 -PVWAURL https://pvwa.company.com -Type LDAP -SourcePlatformZip .\UnixSSH.zip -ConfigurationFile .\platforms.json -ContinueOnError -SaveSettings
 
     .EXAMPLE
+    .\Import-PlatformVariants.ps1 -PVWAURL https://pvwa.company.com -SourcePlatformZip .\UnixSSH.zip -VaultType Machine -CustomName MyApp -ExcludePlatformId MyApp-PrePROD-RT-RS -AdditionalPlatformId MyApp-DR
+
+    Creates the standard machine-vault platforms named MyApp-..., except MyApp-PrePROD-RT-RS, plus MyApp-DR.
+
+    .EXAMPLE
     .\Import-PlatformVariants.ps1
 
     Runs again with the saved settings, asking only for the password.
@@ -64,6 +86,15 @@ param(
     [string]$SourcePlatformId,
 
     [string]$ConfigurationFile,
+
+    [ValidateSet('Human', 'Machine')]
+    [string]$VaultType,
+
+    [string]$CustomName,
+
+    [string[]]$ExcludePlatformId,
+
+    [string[]]$AdditionalPlatformId,
 
     [ValidateSet('CyberArk', 'LDAP', 'RADIUS', 'Windows')]
     [Alias('AuthType')]
@@ -123,19 +154,41 @@ if (-not $PSBoundParameters.ContainsKey('SourcePlatformZip') -and $saved.SourceP
     $SourcePlatformZip = $saved.SourcePlatformZip
     Write-Note "Using saved platform ZIP $SourcePlatformZip."
 }
-if (-not $PSBoundParameters.ContainsKey('ConfigurationFile') -and $saved.ConfigurationFile) {
+# The naming scheme is only ever used when asked for on this command line. Which platforms get
+# created must not depend on what was last clicked in the GUI.
+$useScheme = $PSBoundParameters.ContainsKey('VaultType')
+if ($useScheme -and $PSBoundParameters.ContainsKey('ConfigurationFile')) {
+    throw 'Use either -VaultType or -ConfigurationFile, not both.'
+}
+if (-not $useScheme -and ($CustomName -or $ExcludePlatformId -or $AdditionalPlatformId)) {
+    throw '-CustomName, -ExcludePlatformId and -AdditionalPlatformId only work together with -VaultType.'
+}
+if (-not $useScheme -and -not $PSBoundParameters.ContainsKey('ConfigurationFile') -and $saved.ConfigurationFile) {
     $ConfigurationFile = $saved.ConfigurationFile
     Write-Note "Using saved configuration file $ConfigurationFile."
 }
 $useConcurrentSession = if ($PSBoundParameters.ContainsKey('ConcurrentSession')) { [bool]$ConcurrentSession } else { [bool]$saved.ConcurrentSession }
 
 if ([string]::IsNullOrWhiteSpace($SourcePlatformZip)) { throw 'No platform ZIP given. Use -SourcePlatformZip.' }
-if ([string]::IsNullOrWhiteSpace($ConfigurationFile)) { throw 'No configuration file given. Use -ConfigurationFile.' }
+if (-not $useScheme -and [string]::IsNullOrWhiteSpace($ConfigurationFile)) {
+    throw 'Nothing to create. Use -VaultType Human or Machine for the standard platforms, or -ConfigurationFile.'
+}
+
+$schemePlatforms = $null
+if ($useScheme) {
+    if ([string]::IsNullOrWhiteSpace($CustomName)) {
+        $CustomName = if ($SourcePlatformId) { $SourcePlatformId } else { (Get-PlatformPackageInfo -Path $SourcePlatformZip).PlatformId }
+        if ([string]::IsNullOrWhiteSpace($CustomName)) { throw 'The platform ID could not be read from the ZIP. Use -CustomName.' }
+        Write-Note "Using the platform ID '$CustomName' as the custom name."
+    }
+    $schemePlatforms = @(New-PlatformVariantSet -VaultType $VaultType -CustomName $CustomName -ExcludePlatformId $ExcludePlatformId -AdditionalPlatformId $AdditionalPlatformId)
+    Write-Note "$VaultType vault, $($schemePlatforms.Count) platform(s): $(@($schemePlatforms | ForEach-Object { $_.PlatformId }) -join ', ')."
+}
 
 if ($ValidateOnly) {
     $package = Get-PlatformPackageInfo -Path $SourcePlatformZip
     $sourceId = if ($SourcePlatformId) { $SourcePlatformId } else { $package.PlatformId }
-    $configuration = Read-PlatformVariantConfiguration -Path $ConfigurationFile
+    $configuration = if ($useScheme) { [PSCustomObject]@{ Platforms = $schemePlatforms } } else { Read-PlatformVariantConfiguration -Path $ConfigurationFile }
     $issues = @(Test-PlatformVariantConfiguration -Platforms $configuration.Platforms -SourcePlatformId $sourceId)
     if ($SourcePlatformId -and $package.PlatformId -and $package.PlatformId -ine $SourcePlatformId) {
         $issues += [PSCustomObject]@{ Severity = 'Error'; Index = -1; PlatformId = ''; Message = "Source platform ID '$SourcePlatformId' does not match the platform in the ZIP ('$($package.PlatformId)')." }
@@ -154,6 +207,7 @@ if ($ValidateOnly) {
         IsValid          = ($errorCount -eq 0)
         SourcePlatformId = $sourceId
         PlatformCount    = $configuration.Platforms.Count
+        PlatformIds      = @($configuration.Platforms | ForEach-Object { $_.PlatformId })
         Issues           = $issues
     }
     return
@@ -182,9 +236,16 @@ if ($SaveSettings) {
     $toSave = @{
         AuthType          = $Type
         SourcePlatformZip = (Resolve-Path -LiteralPath $SourcePlatformZip).ProviderPath
-        ConfigurationFile = (Resolve-Path -LiteralPath $ConfigurationFile).ProviderPath
         ConcurrentSession = $useConcurrentSession
         ContinueOnError   = [bool]$ContinueOnError
+    }
+    if ($useScheme) {
+        $toSave['VariantSource'] = $VaultType
+        $toSave['CustomName'] = $CustomName
+    }
+    else {
+        $toSave['VariantSource'] = 'File'
+        $toSave['ConfigurationFile'] = (Resolve-Path -LiteralPath $ConfigurationFile).ProviderPath
     }
     if ($PVWAURL) { $toSave['PVWAURL'] = $PVWAURL }
     if ($null -ne $Credential) { $toSave['Username'] = $Credential.UserName }
@@ -197,7 +258,6 @@ if ($SaveSettings) {
 $arguments = @{
     SourcePlatformZip    = $SourcePlatformZip
     SourcePlatformId     = $SourcePlatformId
-    ConfigurationFile    = $ConfigurationFile
     AuthType             = $Type
     OTPMode              = $otpModeValue
     ConcurrentSession    = $useConcurrentSession
@@ -210,6 +270,7 @@ $arguments = @{
     PassThru             = $true
     WhatIf               = [bool]$WhatIfPreference
 }
+if ($useScheme) { $arguments['Platforms'] = $schemePlatforms } else { $arguments['ConfigurationFile'] = $ConfigurationFile }
 if ($PVWAURL) { $arguments['PVWAURL'] = $PVWAURL }
 if ($null -ne $Credential) { $arguments['Credential'] = $Credential }
 if ($OTP) { $arguments['OTP'] = $OTP }
