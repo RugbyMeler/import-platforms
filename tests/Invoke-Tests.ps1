@@ -483,6 +483,32 @@ Test-Case 'OTP is only accepted with RADIUS' {
     Assert-Equal 'Append' (Get-Vault).LastLogon.OTPMode
 }
 
+Write-Host "`nLogon" -ForegroundColor Cyan
+
+Test-Case 'a password with special characters reaches the logon exactly as typed' {
+    $euro = [string][char]0x20AC
+    foreach ($plain in @('Abc/123/xyz', '/lead and trail/', 'a//b', 'Abc\123', 'He said "hi" and ''bye''', '<a&b>', '100%+1 %2F', '!@#$^*()_-={}[]|:;,.?~`', "Za$euro", '  spaces  ')) {
+        Reset-Vault
+        (Get-Vault).ExpectedPassword = $plain
+        $special = New-Object System.Management.Automation.PSCredential('svc_platforms', (ConvertTo-SecureString $plain -AsPlainText -Force))
+        $null = Test-PvwaConnection -PVWAURL 'pvwa.example.test' -Credential $special -AuthType LDAP -OnEvent $quiet
+        Assert-True ((Get-Vault).LastPasswordReceived -ceq $plain) "Password '$plain' arrived as '$((Get-Vault).LastPasswordReceived)'."
+    }
+}
+
+Test-Case 'a refused logon says what was tried and points at the authentication method, without the password' {
+    Reset-Vault
+    (Get-Vault).ExpectedPassword = 'Right/Password1'
+    $typed = New-Object System.Management.Automation.PSCredential('svc_platforms', (ConvertTo-SecureString 'Other/Password2' -AsPlainText -Force))
+    $message = $null
+    try { $null = Test-PvwaConnection -PVWAURL 'https://pvwa.example.test/PasswordVault' -Credential $typed -AuthType LDAP -OnEvent $quiet } catch { $message = $_.Exception.Message }
+    Assert-True ($message -like "Logon to https://pvwa.example.test as 'svc_platforms' with LDAP authentication failed. PVWA said: ``[401``] Authentication failure*") $message
+    Assert-True ($message -like '*(ITATS004E)*') 'PVWA''s error code should be shown'
+    Assert-True ($message -like '*sent exactly as typed*method you choose there is the one selected here (LDAP)*') $message
+    Assert-True ($message -notlike '*Password2*' -and $message -notlike '*Password1*') 'the password must never appear in the message'
+    Assert-Equal $false (Get-Vault).Connected
+}
+
 Write-Host "`nSource platform not in the Vault" -ForegroundColor Cyan
 
 Test-Case 'the ZIP is imported first, the variants are made from it, and the run says so' {

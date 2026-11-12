@@ -222,7 +222,8 @@
                     <TextBox x:Name="PvwaUrlBox" Grid.Row="0" Grid.Column="1" ToolTip="For example https://pvwa.company.com - a trailing /PasswordVault is ignored."/>
 
                     <TextBlock Grid.Row="2" Text="Authentication" Style="{StaticResource FieldLabel}"/>
-                    <ComboBox x:Name="AuthTypeBox" Grid.Row="2" Grid.Column="1"/>
+                    <ComboBox x:Name="AuthTypeBox" Grid.Row="2" Grid.Column="1"
+                              ToolTip="Must be the method you choose on the PVWA logon page. The same user name and password are refused when the method differs."/>
 
                     <TextBlock Grid.Row="4" Text="User name" Style="{StaticResource FieldLabel}"/>
                     <TextBox x:Name="UsernameBox" Grid.Row="4" Grid.Column="1"/>

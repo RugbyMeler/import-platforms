@@ -986,8 +986,44 @@ function Connect-Pvwa {
     }
 
     Write-EngineLog "Connecting to $baseUri as '$($Credential.UserName)' ($AuthType)."
-    $null = New-PASSession @parameters
+    try {
+        $null = New-PASSession @parameters
+    }
+    catch {
+        throw (Get-LogonFailureMessage -ErrorRecord $_ -BaseUri $baseUri -UserName $Credential.UserName -AuthType $AuthType)
+    }
     Write-EngineLog 'Connected to CyberArk PVWA.' -Level SUCCESS
+}
+
+function Get-LogonFailureMessage {
+    <#
+        A refused logon used to surface as PVWA's bare "Authentication failure", which says nothing
+        about what was attempted. This states it, and points at what differs most often between a
+        logon that works on the PVWA page and one that fails here: the authentication method.
+
+        The password itself is never part of the message. It is handed to psPAS untouched, and psPAS
+        sends it as a JSON string, so characters such as / \ " < & reach PVWA exactly as typed.
+    #>
+    param(
+        [System.Management.Automation.ErrorRecord]$ErrorRecord,
+        [string]$BaseUri,
+        [string]$UserName,
+        [string]$AuthType
+    )
+
+    $reason = [string]$ErrorRecord.Exception.Message
+    # psPAS puts PVWA's own error code (ITATS004E, PASWS013E, ...) in the error ID.
+    $code = ([string]$ErrorRecord.FullyQualifiedErrorId -split ',')[0]
+    if ($code -cmatch '^[A-Z]{3,8}\d{3,4}[A-Z]?$' -and $reason -notlike "*$code*") { $reason = "$reason ($code)" }
+
+    $message = "Logon to $BaseUri as '$UserName' with $AuthType authentication failed. PVWA said: $reason"
+
+    $rejected = ($reason -match '(?i)authentication failure|ITATS|\[40[13]\]|unauthorized|invalid (user|credential|password)|incorrect')
+    if ($rejected) {
+        $message += " -- The password was sent exactly as typed; no character is changed. If the same user name and password work on the PVWA logon page, check that the authentication method you choose there is the one selected here ($AuthType), and that the user name is written the same way."
+        if ($AuthType -eq 'RADIUS') { $message += ' For RADIUS, also check the one-time code and whether it must be appended or sent as a challenge.' }
+    }
+    return $message
 }
 
 function Disconnect-Pvwa {

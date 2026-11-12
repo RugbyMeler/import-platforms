@@ -485,6 +485,36 @@ Test-Case 'import: connection test reports the PVWA version' {
     Assert-True $ui.RunButton.IsEnabled 'controls must be enabled again'
 }
 
+Test-Case 'import: a password with / and other special characters logs on, typed into the password box' {
+    $typed = 'Sl/ash\back "quote'' <&> %2F ' + [char]0x20AC + ' /end'
+    try {
+        (Get-Vault).ExpectedPassword = $typed       # the fake PVWA refuses anything else
+        $ui.PasswordBox.Password = $typed
+        Invoke-Click $ui.TestConnectionButton
+        Wait-EngineJob
+        Assert-True ($ui.ProgressText.Text -like 'Connection OK*') $ui.ProgressText.Text
+        Assert-True ((Get-Vault).LastPasswordReceived -ceq $typed) "The logon received '$((Get-Vault).LastPasswordReceived)'."
+        Assert-True ((Get-LogText) -notlike '*Sl/ash*') 'the password must not appear in the log'
+    }
+    finally {
+        (Get-Vault).ExpectedPassword = ''
+        $ui.PasswordBox.Password = 'not-a-real-password'
+    }
+}
+
+Test-Case 'import: a refused logon explains what was tried and where to look' {
+    $ui.PasswordBox.Password = 'wrong'
+    Invoke-Click $ui.TestConnectionButton
+    Wait-EngineJob
+    $log = Get-LogText
+    Assert-True ($log -like "*Logon to https://pvwa.example.test as 'svc_platforms' with CyberArk authentication failed*") 'the log should say what was attempted'
+    Assert-True ($log -like '*(ITATS004E)*') 'the log should carry PVWA''s error code'
+    Assert-True ($log -like '*method you choose there is the one selected here (CyberArk)*') 'the log should point at the authentication method'
+    Assert-True ($ui.StatusText.Text -like 'Connection test failed: Logon to*') $ui.StatusText.Text
+    Assert-True $ui.RunButton.IsEnabled 'controls must be enabled again after a failed logon'
+    $ui.PasswordBox.Password = 'not-a-real-password'
+}
+
 Test-Case 'import: a wrong password is shown as a failed connection test' {
     $ui.PasswordBox.Password = 'wrong'
     Invoke-Click $ui.TestConnectionButton
